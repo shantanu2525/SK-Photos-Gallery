@@ -6,7 +6,7 @@ import {
   X, ChevronLeft, ChevronRight, Download, ZoomIn, ZoomOut, RotateCw,
   LogOut, AlertCircle, Search, Images, ShieldCheck, Upload,
   RefreshCw, Settings, KeyRound, Save, ExternalLink, Shield,
-  Layers, Camera, Sparkles, ImageIcon, Aperture, ScanFace, UserCheck, UploadCloud,
+  Layers, Camera, Sparkles, ImageIcon, Aperture, ScanFace, UploadCloud,
   Heart, FileDown, FileUp
 } from 'lucide-react';
 
@@ -197,7 +197,7 @@ function BgParticles() {
 
 /* ═══════════════ LOADER ═══════════════ */
 const LOADING_TIPS = ["Fetching your memories…", "Unwrapping your photo collection…", "Almost there, hang tight…", "Gathering pixels from the cloud…", "Loading beautiful moments…", "Preparing your gallery experience…", "Sorting through your treasures…", "Bringing your photos to life…", "Just a moment, magic is happening…", "Dusting off the photo albums…"];
-const _SCAN_TIPS = ["Analyzing faces in your photos…", "Looking for your face in the gallery…", "Matching facial features…", "AI is doing its magic…", "Comparing face descriptors…", "Finding photos with you in them…", "Almost done, recognizing faces…", "Scanning gallery for matches…"];
+const _SCAN_TIPS = ["AI is analyzing faces…", "Neural network scanning photos…", "Matching facial features with AI…", "Deep learning in progress…", "Comparing face embeddings…", "AI is searching for you…", "Running face recognition model…", "Almost there, AI is working…"];
 function useCyclingTip(tips: string[], interval = 3000) { const [i, setI] = useState(0); useEffect(() => { const t = setInterval(() => setI(n => (n + 1) % tips.length), interval); return () => clearInterval(t); }, [tips, interval]); return tips[i]; }
 
 function FancyLoader({ tips, progress, total, label }: { tips: string[]; progress: number; total: number; label: string }) {
@@ -236,14 +236,17 @@ function FaceCapture({ onCapture, onSkip }: { onCapture: (d: Float32Array) => vo
   const uploadRef = useRef<HTMLInputElement>(null);
   const isMobile = /Android|iPhone|iPad|iPod/i.test(navigator.userAgent);
 
-  // Load models
+  // Load AI models — SSD MobileNet (accurate) + TinyFaceDetector (fast) + landmarks + recognition
   useEffect(() => {
     (async () => {
       try {
         setModelLoading(true);
-        await faceapi.nets.tinyFaceDetector.loadFromUri(MODEL_URL);
-        await faceapi.nets.faceLandmark68Net.loadFromUri(MODEL_URL);
-        await faceapi.nets.faceRecognitionNet.loadFromUri(MODEL_URL);
+        await Promise.all([
+          faceapi.nets.ssdMobilenetv1.loadFromUri(MODEL_URL),
+          faceapi.nets.tinyFaceDetector.loadFromUri(MODEL_URL),
+          faceapi.nets.faceLandmark68Net.loadFromUri(MODEL_URL),
+          faceapi.nets.faceRecognitionNet.loadFromUri(MODEL_URL),
+        ]);
         setModelsLoaded(true);
       } catch (e) {
         console.error(e);
@@ -320,16 +323,28 @@ function FaceCapture({ onCapture, onSkip }: { onCapture: (d: Float32Array) => vo
     setError('');
     try {
       const img = await loadImage(previewUrl);
-      const d = await faceapi
-        .detectSingleFace(img, new faceapi.TinyFaceDetectorOptions({ inputSize: 320, scoreThreshold: 0.3 }))
+
+      // Use SSD MobileNet v1 — most accurate detector for the reference selfie
+      const detection = await faceapi
+        .detectSingleFace(img, new faceapi.SsdMobilenetv1Options({ minConfidence: 0.3 }))
         .withFaceLandmarks()
         .withFaceDescriptor();
-      if (!d) {
-        setError('No face detected. Make sure your face is clearly visible and well-lit.');
-        setProcessing(false);
-        return;
+
+      if (!detection) {
+        // Fallback to TinyFaceDetector
+        const fallback = await faceapi
+          .detectSingleFace(img, new faceapi.TinyFaceDetectorOptions({ inputSize: 416, scoreThreshold: 0.2 }))
+          .withFaceLandmarks()
+          .withFaceDescriptor();
+        if (!fallback) {
+          setError('No face detected. Make sure your face is clearly visible and well-lit.');
+          setProcessing(false);
+          return;
+        }
+        onCapture(fallback.descriptor);
+      } else {
+        onCapture(detection.descriptor);
       }
-      onCapture(d.descriptor);
     } catch (e) {
       console.error('Face detect error:', e);
       setError('Detection failed. Try a different photo.');
@@ -352,9 +367,19 @@ function FaceCapture({ onCapture, onSkip }: { onCapture: (d: Float32Array) => vo
               <Sparkles className="w-3 h-3 text-white" />
             </div>
           </div>
-          <h1 className="text-2xl font-bold text-white tracking-tight">Find Your Photos</h1>
+          <div className="flex items-center gap-2">
+            <h1 className="text-2xl font-bold text-white tracking-tight">Find Your Photos</h1>
+            <span className="px-2 py-0.5 rounded-full bg-gradient-to-r from-violet-500/20 to-cyan-500/20 text-cyan-300 text-[10px] font-bold uppercase tracking-wider border border-cyan-500/25">AI</span>
+            <span className="px-2 py-0.5 rounded-full bg-amber-500/20 text-amber-300 text-[10px] font-bold uppercase tracking-wider border border-amber-500/30">Beta</span>
+          </div>
           <p className="text-white/40 text-sm mt-1 text-center max-w-xs leading-relaxed">
-            {isMobile ? 'Take a selfie or pick a photo from your gallery' : 'Snap a selfie or upload your photo — AI will find you'}
+            {isMobile ? 'Take a selfie or pick from gallery — AI will find you' : 'Snap a selfie or upload your photo — AI will find you'}
+          </p>
+          <p className="text-white/20 text-[10px] mt-2 text-center max-w-xs leading-relaxed flex items-center justify-center gap-1.5">
+            <Sparkles className="w-3 h-3 text-cyan-400/40" /> Powered by neural network face recognition
+          </p>
+          <p className="text-amber-400/30 text-[10px] mt-1 text-center max-w-xs leading-relaxed">
+            ⚠️ Beta feature — results may not always be accurate
           </p>
         </div>
 
@@ -365,8 +390,8 @@ function FaceCapture({ onCapture, onSkip }: { onCapture: (d: Float32Array) => vo
               <div className="absolute inset-0 rounded-full border-2 border-purple-500/20" />
               <div className="absolute inset-0 rounded-full border-2 border-transparent border-t-purple-400 animate-spin" />
             </div>
-            <p className="text-white/40 text-sm">Initializing AI…</p>
-            <p className="text-white/20 text-xs mt-1">First time may take a moment</p>
+            <p className="text-white/40 text-sm">Loading AI face recognition models…</p>
+            <p className="text-white/20 text-xs mt-1">Downloading neural networks — first visit may take a moment</p>
           </div>
         )}
 
@@ -447,8 +472,8 @@ function FaceCapture({ onCapture, onSkip }: { onCapture: (d: Float32Array) => vo
               <button onClick={detectFace} disabled={processing || !modelsLoaded}
                 className="w-full py-4 rounded-2xl font-semibold text-[15px] text-white bg-gradient-to-r from-pink-600 via-rose-600 to-violet-600 hover:from-pink-500 hover:via-rose-500 hover:to-violet-500 shadow-xl shadow-pink-600/20 transition-all active:scale-[.97] disabled:opacity-50 flex items-center justify-center gap-2.5 grad-move">
                 {processing
-                  ? <><span className="w-5 h-5 border-2 border-white/30 border-t-white rounded-full animate-spin" />Detecting face…</>
-                  : <><UserCheck className="w-5 h-5" />Find My Photos</>
+                  ? <><span className="w-5 h-5 border-2 border-white/30 border-t-white rounded-full animate-spin" />AI Analyzing Face…</>
+                  : <><Sparkles className="w-5 h-5" />Find My Photos with AI</>
                 }
               </button>
             )}
@@ -762,17 +787,24 @@ function Gallery({ faceDescriptor, onLogout }: { faceDescriptor: Float32Array | 
   }, []);
   useEffect(() => { loadPhotos(); }, [loadPhotos]);
 
-  // ── Face scan ──
+  // ── AI Face Scan — uses FaceMatcher for better accuracy ──
   useEffect(() => {
     if (loadingPhotos || !faceDescriptor || allPhotos.length === 0) return;
     let cancelled = false;
-    const THRESHOLD = 0.6;
-    const BATCH = 6;
-    const opts = new faceapi.TinyFaceDetectorOptions({ inputSize: 224, scoreThreshold: 0.3 });
-    // Use 300px thumbs — enough detail for faces but still fast
-    const scanUrl = (fid: string) => `https://lh3.googleusercontent.com/d/${fid}=w300`;
+    const MATCH_THRESHOLD = 0.55; // lower = stricter, higher = more lenient
+    const BATCH = 5;
+    const scanUrl = (fid: string) => `https://lh3.googleusercontent.com/d/${fid}=w320`;
 
-    // Reliable image loader using a hidden <img> in DOM
+    // Create a FaceMatcher from the reference face — AI handles matching
+    const labeledDescriptor = new faceapi.LabeledFaceDescriptors('user', [faceDescriptor]);
+    const matcher = new faceapi.FaceMatcher(labeledDescriptor, MATCH_THRESHOLD);
+
+    // Use SSD MobileNet for scanning — more accurate than TinyFaceDetector
+    const ssdOpts = new faceapi.SsdMobilenetv1Options({ minConfidence: 0.35 });
+    // TinyFaceDetector as fast fallback
+    const tinyOpts = new faceapi.TinyFaceDetectorOptions({ inputSize: 256, scoreThreshold: 0.3 });
+
+    // Reliable image loader
     const loadScanImage = (url: string): Promise<HTMLImageElement | null> => {
       return new Promise(resolve => {
         const img = document.createElement('img');
@@ -781,13 +813,32 @@ function Gallery({ faceDescriptor, onLogout }: { faceDescriptor: Float32Array | 
         img.style.position = 'fixed';
         img.style.left = '-9999px';
         img.style.visibility = 'hidden';
-        img.onload = () => { document.body.removeChild(img); resolve(img); };
+        img.onload = () => { try { document.body.removeChild(img); } catch {} resolve(img); };
         img.onerror = () => { try { document.body.removeChild(img); } catch {} resolve(null); };
         document.body.appendChild(img);
         img.src = url;
-        // Timeout after 8s
-        setTimeout(() => { img.onload = null; img.onerror = null; try { document.body.removeChild(img); } catch {} resolve(null); }, 8000);
+        setTimeout(() => { img.onload = null; img.onerror = null; try { document.body.removeChild(img); } catch {} resolve(null); }, 10000);
       });
+    };
+
+    // Scan one photo — try SSD first, fallback to Tiny
+    const scanPhoto = async (_photo: Photo, img: HTMLImageElement): Promise<boolean> => {
+      // Try SSD MobileNet (more accurate)
+      let dets = await faceapi.detectAllFaces(img, ssdOpts).withFaceLandmarks().withFaceDescriptors();
+
+      // If SSD found nothing, try TinyFaceDetector as fallback
+      if (dets.length === 0) {
+        dets = await faceapi.detectAllFaces(img, tinyOpts).withFaceLandmarks().withFaceDescriptors();
+      }
+
+      if (dets.length === 0) return false;
+
+      // Use FaceMatcher to check each detected face
+      for (const det of dets) {
+        const match = matcher.findBestMatch(det.descriptor);
+        if (match.label === 'user') return true; // AI says it's the same person
+      }
+      return false;
     };
 
     (async () => {
@@ -796,59 +847,46 @@ function Gallery({ faceDescriptor, onLogout }: { faceDescriptor: Float32Array | 
       setScanProgress(0);
       const matches: Photo[] = [];
 
-      // Preload first batch of images (just start downloading)
+      // Preloading system
       const preloading = new Map<string, Promise<HTMLImageElement | null>>();
       const preload = (start: number, count: number) => {
         for (let j = start; j < Math.min(start + count, allPhotos.length); j++) {
           const fid = allPhotos[j].fileId;
-          if (!preloading.has(fid)) {
-            preloading.set(fid, loadScanImage(scanUrl(fid)));
-          }
+          if (!preloading.has(fid)) preloading.set(fid, loadScanImage(scanUrl(fid)));
         }
       };
 
-      // Process in sequential batches, but preload next batch while processing current
+      // Preload first chunk
+      preload(0, BATCH * 4);
+
       for (let i = 0; i < allPhotos.length; i += BATCH) {
         if (cancelled) break;
 
-        // Start preloading the NEXT batch while we process the current one
-        preload(i + BATCH, BATCH * 3);
+        // Keep preloading ahead
+        preload(i + BATCH, BATCH * 4);
 
         const batch = allPhotos.slice(i, i + BATCH);
 
-        // Process current batch — run detection on each (sequential to avoid GPU contention)
         for (const photo of batch) {
           if (cancelled) break;
           try {
-            // Use preloaded image if available
-            let img: HTMLImageElement | null = null;
             const cached = preloading.get(photo.fileId);
-            if (cached) {
-              img = await cached;
-            } else {
-              img = await loadScanImage(scanUrl(photo.fileId));
-            }
+            const img = cached ? await cached : await loadScanImage(scanUrl(photo.fileId));
             if (img && img.naturalWidth) {
-              const dets = await faceapi.detectAllFaces(img, opts).withFaceLandmarks().withFaceDescriptors();
-              for (const d of dets) {
-                if (faceapi.euclideanDistance(faceDescriptor, d.descriptor) < THRESHOLD) {
-                  matches.push(photo);
-                  break;
-                }
-              }
+              const isMatch = await scanPhoto(photo, img);
+              if (isMatch) matches.push(photo);
             }
           } catch { /* skip */ }
         }
 
-        const done = Math.min(i + BATCH, allPhotos.length);
-        setScanProgress(done);
+        setScanProgress(Math.min(i + BATCH, allPhotos.length));
         setMatchedPhotos([...matches]);
       }
 
       if (!cancelled) {
         setMatchedPhotos(matches);
         setScanning(false);
-        console.log(`Face scan complete: ${matches.length} matches out of ${allPhotos.length}`);
+        console.log(`AI Face Scan complete: ${matches.length} matches out of ${allPhotos.length}`);
       }
     })();
 
@@ -873,16 +911,18 @@ function Gallery({ faceDescriptor, onLogout }: { faceDescriptor: Float32Array | 
             <div className="glass-strong border-b border-white/5 px-4 py-2 flex items-center justify-center gap-3">
               <span className="w-4 h-4 border-2 border-purple-400/30 border-t-purple-400 rounded-full animate-spin" />
               <span className="text-white/50 text-xs hidden sm:inline">{scanTip}</span>
-              <span className="text-white/50 text-xs sm:hidden">Scanning… <span className="text-white/70 font-mono">{scanProgress}/{scanTotal}</span></span>
+              <span className="text-white/50 text-xs sm:hidden">AI Scanning… <span className="text-white/70 font-mono">{scanProgress}/{scanTotal}</span></span>
               <span className="text-emerald-400/70 text-xs font-medium">{matchedPhotos?.length || 0} found</span>
+              <span className="px-1.5 py-0.5 rounded-full bg-gradient-to-r from-violet-500/15 to-cyan-500/15 text-cyan-400/60 text-[9px] font-bold uppercase hidden sm:inline">AI</span>
+              <span className="px-1.5 py-0.5 rounded-full bg-amber-500/15 text-amber-400/60 text-[9px] font-bold uppercase hidden sm:inline">Beta</span>
             </div>
           </div>
         )}
-        <header className={`sticky top-0 z-30 glass-strong border-b border-white/[0.04] ${scanning ? 'mt-[52px]' : ''}`}><div className="max-w-[1440px] mx-auto px-4 md:px-6 py-3 flex items-center justify-between gap-4"><div className="flex items-center gap-3 min-w-0"><div className="w-9 h-9 rounded-xl bg-gradient-to-br from-purple-600 to-indigo-600 flex items-center justify-center shrink-0 shadow-lg shadow-purple-800/20 anim-glow"><Images className="w-[18px] h-[18px] text-white" /></div><div className="min-w-0"><h2 className="text-white font-semibold text-[15px] truncate">{faceDescriptor && !showAll ? '🎯 Your Photos' : '📸 Gallery'}</h2><p className="text-white/30 text-[11px]">{faceDescriptor && !showAll ? `${visible.length} with your face` : `${visible.length} photos`}</p></div></div><div className="flex items-center gap-2">{faceDescriptor && <button onClick={() => setShowAll(v => !v)} className={`hidden sm:flex items-center gap-1.5 px-3.5 py-2 rounded-xl text-xs font-semibold transition-all ${showAll ? 'bg-pink-600/20 text-pink-300 border border-pink-500/20' : 'glass text-white/50 hover:text-white/80'}`}>{showAll ? <><ScanFace className="w-3.5 h-3.5" />My Photos</> : <><Layers className="w-3.5 h-3.5" />All Photos</>}</button>}<div className="relative hidden sm:block"><Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-white/20" /><input value={query} onChange={e => setQuery(e.target.value)} placeholder="Search…" className="pl-9 pr-4 py-2 w-48 glass rounded-xl text-white text-xs placeholder-white/20 focus:outline-none focus:ring-1 focus:ring-purple-500/30" /></div><div className="flex glass rounded-xl p-0.5"><button onClick={() => setLayout('grid')} className={`p-2 rounded-lg transition ${layout === 'grid' ? 'bg-purple-600 text-white shadow-md' : 'text-white/30 hover:text-white/60'}`}><Grid3X3 className="w-4 h-4" /></button><button onClick={() => setLayout('masonry')} className={`p-2 rounded-lg transition ${layout === 'masonry' ? 'bg-purple-600 text-white shadow-md' : 'text-white/30 hover:text-white/60'}`}><LayoutGrid className="w-4 h-4" /></button></div><button onClick={loadPhotos} className="p-2 text-white/25 hover:text-white glass rounded-xl transition"><RefreshCw className="w-4 h-4" /></button><button onClick={onLogout} className="p-2 text-white/25 hover:text-red-400 glass rounded-xl transition"><LogOut className="w-[18px] h-[18px]" /></button></div></div></header>
+        <header className={`sticky top-0 z-30 glass-strong border-b border-white/[0.04] ${scanning ? 'mt-[52px]' : ''}`}><div className="max-w-[1440px] mx-auto px-4 md:px-6 py-3 flex items-center justify-between gap-4"><div className="flex items-center gap-3 min-w-0"><div className="w-9 h-9 rounded-xl bg-gradient-to-br from-purple-600 to-indigo-600 flex items-center justify-center shrink-0 shadow-lg shadow-purple-800/20 anim-glow"><Images className="w-[18px] h-[18px] text-white" /></div><div className="min-w-0"><h2 className="text-white font-semibold text-[15px] truncate flex items-center gap-1.5">{faceDescriptor && !showAll ? '🎯 Your Photos' : '📸 Gallery'}{faceDescriptor && !showAll && <><span className="px-1.5 py-0.5 rounded-full bg-gradient-to-r from-violet-500/20 to-cyan-500/20 text-cyan-300 text-[8px] font-bold uppercase tracking-wider border border-cyan-500/25 shrink-0">AI</span><span className="px-1.5 py-0.5 rounded-full bg-amber-500/20 text-amber-300 text-[8px] font-bold uppercase tracking-wider border border-amber-500/25 shrink-0">Beta</span></>}</h2><p className="text-white/30 text-[11px]">{faceDescriptor && !showAll ? `${visible.length} matched by AI · results may vary` : `${visible.length} photos`}</p></div></div><div className="flex items-center gap-2">{faceDescriptor && <button onClick={() => setShowAll(v => !v)} className={`hidden sm:flex items-center gap-1.5 px-3.5 py-2 rounded-xl text-xs font-semibold transition-all ${showAll ? 'bg-pink-600/20 text-pink-300 border border-pink-500/20' : 'glass text-white/50 hover:text-white/80'}`}>{showAll ? <><ScanFace className="w-3.5 h-3.5" />My Photos</> : <><Layers className="w-3.5 h-3.5" />All Photos</>}</button>}<div className="relative hidden sm:block"><Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-white/20" /><input value={query} onChange={e => setQuery(e.target.value)} placeholder="Search…" className="pl-9 pr-4 py-2 w-48 glass rounded-xl text-white text-xs placeholder-white/20 focus:outline-none focus:ring-1 focus:ring-purple-500/30" /></div><div className="flex glass rounded-xl p-0.5"><button onClick={() => setLayout('grid')} className={`p-2 rounded-lg transition ${layout === 'grid' ? 'bg-purple-600 text-white shadow-md' : 'text-white/30 hover:text-white/60'}`}><Grid3X3 className="w-4 h-4" /></button><button onClick={() => setLayout('masonry')} className={`p-2 rounded-lg transition ${layout === 'masonry' ? 'bg-purple-600 text-white shadow-md' : 'text-white/30 hover:text-white/60'}`}><LayoutGrid className="w-4 h-4" /></button></div><button onClick={loadPhotos} className="p-2 text-white/25 hover:text-white glass rounded-xl transition"><RefreshCw className="w-4 h-4" /></button><button onClick={onLogout} className="p-2 text-white/25 hover:text-red-400 glass rounded-xl transition"><LogOut className="w-[18px] h-[18px]" /></button></div></div></header>
         <main className="max-w-[1440px] mx-auto px-4 md:px-6 py-6">
           {faceDescriptor && !error && <button onClick={() => setShowAll(v => !v)} className={`sm:hidden w-full mb-5 flex items-center justify-center gap-2 py-3 rounded-2xl text-sm font-semibold transition-all ${showAll ? 'bg-pink-600/20 text-pink-300 border border-pink-500/20' : 'glass text-white/50'}`}>{showAll ? <><ScanFace className="w-4 h-4" />Show My Photos Only</> : <><Layers className="w-4 h-4" />Show All Photos</>}</button>}
           {error && <div className="flex flex-col items-center py-32 anim-fade-up"><Images className="w-14 h-14 text-white/[0.06] mb-4" /><p className="text-white/35 text-sm text-center max-w-sm">{error}</p><button onClick={loadPhotos} className="mt-5 px-5 py-2.5 glass text-purple-300 text-xs rounded-xl transition hover:bg-white/5">Retry</button></div>}
-          {!error && faceDescriptor && !showAll && matchedPhotos && matchedPhotos.length === 0 && <div className="flex flex-col items-center py-32 anim-fade-up"><div className="w-20 h-20 rounded-3xl glass flex items-center justify-center mb-5"><ScanFace className="w-10 h-10 text-white/10" /></div><p className="text-white/35 text-base font-medium">No photos with your face found</p><p className="text-white/20 text-sm mt-1 mb-6">Try a different selfie or browse everything</p><button onClick={() => setShowAll(true)} className="px-6 py-3 bg-gradient-to-r from-purple-600 to-indigo-600 text-white text-sm font-semibold rounded-2xl shadow-xl shadow-purple-700/20 transition active:scale-[.97] flex items-center gap-2 grad-move"><Layers className="w-5 h-5" />Show All Photos</button></div>}
+          {!error && faceDescriptor && !showAll && matchedPhotos && matchedPhotos.length === 0 && <div className="flex flex-col items-center py-32 anim-fade-up"><div className="w-20 h-20 rounded-3xl glass flex items-center justify-center mb-5"><ScanFace className="w-10 h-10 text-white/10" /></div><p className="text-white/35 text-base font-medium">AI couldn't find your face in any photos</p><p className="text-white/20 text-sm mt-1">Try a clearer selfie with good lighting</p><p className="text-amber-400/30 text-[10px] mt-2 mb-6 flex items-center gap-1"><Sparkles className="w-3 h-3" /> AI face recognition is in beta — results may not always be accurate</p><button onClick={() => setShowAll(true)} className="px-6 py-3 bg-gradient-to-r from-purple-600 to-indigo-600 text-white text-sm font-semibold rounded-2xl shadow-xl shadow-purple-700/20 transition active:scale-[.97] flex items-center gap-2 grad-move"><Layers className="w-5 h-5" />Show All Photos</button></div>}
           {!error && visible.length > 0 && layout === 'grid' && <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 gap-2.5">{visible.map((p, i) => (<button key={`${p.id}-${i}`} onClick={() => setLightbox(i)} className="group relative aspect-square rounded-2xl overflow-hidden bg-dark-700/50 border border-white/[0.04] hover:border-purple-500/30 transition-all duration-500 hover:shadow-xl hover:shadow-purple-500/10 hover:scale-[1.04] anim-card-in" style={{ animationDelay: `${Math.min(i * 40, 800)}ms` }}>{!loaded.has(p.id) && !failed.has(p.id) && <div className="absolute inset-0 shimmer" />}<img src={p.thumb} alt={p.name} loading="lazy" referrerPolicy="no-referrer" className={`w-full h-full object-cover transition-all duration-700 group-hover:scale-110 ${loaded.has(p.id) ? 'opacity-100' : 'opacity-0'}`} onLoad={() => setLoaded(s => new Set(s).add(p.id))} onError={() => setFailed(s => new Set(s).add(p.id))} /><div className="absolute inset-0 bg-gradient-to-t from-black/70 via-black/0 to-transparent opacity-0 group-hover:opacity-100 transition-opacity duration-300" /><div className="absolute bottom-0 left-0 right-0 p-2.5 opacity-0 group-hover:opacity-100 transition-all duration-300 translate-y-1 group-hover:translate-y-0"><p className="text-white text-[11px] truncate font-medium">{p.name}</p></div></button>))}</div>}
           {!error && visible.length > 0 && layout === 'masonry' && <div className="columns-2 sm:columns-3 md:columns-4 lg:columns-5 xl:columns-6 gap-2.5 [&>button]:mb-2.5">{visible.map((p, i) => (<button key={`${p.id}-${i}`} onClick={() => setLightbox(i)} className="group relative w-full rounded-2xl overflow-hidden bg-dark-700/50 border border-white/[0.04] hover:border-purple-500/30 transition-all duration-500 hover:shadow-xl hover:shadow-purple-500/10 break-inside-avoid block anim-card-in" style={{ animationDelay: `${Math.min(i * 40, 800)}ms` }}>{!loaded.has(p.id) && !failed.has(p.id) && <div className="w-full pt-[75%] shimmer" />}<img src={p.thumb} alt={p.name} loading="lazy" referrerPolicy="no-referrer" className={`w-full h-auto transition-all duration-700 group-hover:scale-105 ${loaded.has(p.id) ? 'opacity-100' : 'opacity-0'}`} onLoad={() => setLoaded(s => new Set(s).add(p.id))} onError={() => setFailed(s => new Set(s).add(p.id))} /><div className="absolute inset-0 bg-gradient-to-t from-black/70 via-black/0 to-transparent opacity-0 group-hover:opacity-100 transition-opacity duration-300" /></button>))}</div>}
           {!error && displayPhotos.length > 0 && !visible.length && query && <div className="flex flex-col items-center py-32"><Search className="w-12 h-12 text-white/[0.06] mb-4" /><p className="text-white/35 text-sm">No results for "{query}"</p></div>}
