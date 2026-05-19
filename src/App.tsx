@@ -762,27 +762,80 @@ function Gallery({ faceDescriptor, onLogout }: { faceDescriptor: Float32Array | 
   }, []);
   useEffect(() => { loadPhotos(); }, [loadPhotos]);
 
-  // Face scan — fast parallel batched processing
+  // ── Face scan — high-speed pipeline ──
+  // Strategy:
+  //  1. Pre-download thumbnails in large parallel batches (network-bound)
+  //  2. Resize to tiny canvas (128px) for fastest TF inference
+  //  3. Two-pass detection:
+  //     Pass 1 — fast face detect only (no landmarks/descriptors) → skip photos with no faces
+  //     Pass 2 — full descriptor extraction only on photos WITH faces → compare
+  //  4. Process detection sequentially (GPU/CPU bound) but overlap with next batch download
+
   useEffect(() => {
     if (loadingPhotos || !faceDescriptor || allPhotos.length === 0) return;
     let cancelled = false;
     const THRESHOLD = 0.55;
-    const BATCH_SIZE = 8; // process 8 photos in parallel
-    const detectorOptions = new faceapi.TinyFaceDetectorOptions({ inputSize: 224, scoreThreshold: 0.3 });
+    const PRELOAD_AHEAD = 30;  // preload 30 images ahead
+    const SCAN_SIZE = 128;     // resize to 128px for inference
 
-    // Use small thumbnails for scanning (w150 instead of w400)
-    const makeScanUrl = (fid: string) => `https://lh3.googleusercontent.com/d/${fid}=w160`;
+    const detectorFast = new faceapi.TinyFaceDetectorOptions({ inputSize: 160, scoreThreshold: 0.4 });
+    const detectorFull = new faceapi.TinyFaceDetectorOptions({ inputSize: 224, scoreThreshold: 0.3 });
 
-    // Scan a single photo — returns the photo if face matches, null otherwise
-    const scanOne = async (photo: Photo): Promise<Photo | null> => {
-      try {
-        const img = await loadImage(makeScanUrl(photo.fileId));
-        const dets = await faceapi.detectAllFaces(img, detectorOptions).withFaceLandmarks().withFaceDescriptors();
-        for (const d of dets) {
-          if (faceapi.euclideanDistance(faceDescriptor, d.descriptor) < THRESHOLD) return photo;
+    const makeScanUrl = (fid: string) => `https://lh3.googleusercontent.com/d/${fid}=w200`;
+
+    // Image cache for preloaded images
+    const imgCache = new Map<string, HTMLImageElement | null>();
+
+    // Preload a batch of images (just start downloading, don't wait)
+    const preloadBatch = (photos: Photo[]) => {
+      for (const p of photos) {
+        if (imgCache.has(p.fileId)) continue;
+        const img = new Image();
+        img.crossOrigin = 'anonymous';
+        img.referrerPolicy = 'no-referrer';
+        const promise = new Promise<HTMLImageElement | null>((resolve) => {
+          img.onload = () => resolve(img);
+          img.onerror = () => resolve(null);
+        });
+        img.src = makeScanUrl(p.fileId);
+        // Store promise result once resolved
+        promise.then(result => imgCache.set(p.fileId, result));
+        imgCache.set(p.fileId, null); // mark as loading
+      }
+    };
+
+    // Wait for a specific image from cache
+    const getImage = (fid: string): Promise<HTMLImageElement | null> => {
+      return new Promise((resolve) => {
+        const check = () => {
+          const cached = imgCache.get(fid);
+          if (cached !== null && cached !== undefined) { resolve(cached); return; }
+          if (cached === undefined) { resolve(null); return; } // never loaded
+          setTimeout(check, 20);
+        };
+        // Also try loading directly if not in cache
+        if (!imgCache.has(fid)) {
+          const img = new Image();
+          img.crossOrigin = 'anonymous';
+          img.referrerPolicy = 'no-referrer';
+          img.onload = () => { imgCache.set(fid, img); resolve(img); };
+          img.onerror = () => { imgCache.set(fid, null); resolve(null); };
+          img.src = makeScanUrl(fid);
+          imgCache.set(fid, null);
+        } else {
+          check();
         }
-      } catch { /* skip */ }
-      return null;
+      });
+    };
+
+    // Resize image to small canvas for fast inference
+    const resizeToCanvas = (img: HTMLImageElement): HTMLCanvasElement => {
+      const canvas = document.createElement('canvas');
+      const scale = SCAN_SIZE / Math.max(img.naturalWidth, img.naturalHeight, 1);
+      canvas.width = Math.round(img.naturalWidth * scale);
+      canvas.height = Math.round(img.naturalHeight * scale);
+      canvas.getContext('2d')!.drawImage(img, 0, 0, canvas.width, canvas.height);
+      return canvas;
     };
 
     (async () => {
@@ -791,17 +844,46 @@ function Gallery({ faceDescriptor, onLogout }: { faceDescriptor: Float32Array | 
       setScanProgress(0);
       const matches: Photo[] = [];
 
-      // Process in batches of BATCH_SIZE
-      for (let i = 0; i < allPhotos.length; i += BATCH_SIZE) {
+      // Preload first batch
+      preloadBatch(allPhotos.slice(0, PRELOAD_AHEAD));
+
+      for (let i = 0; i < allPhotos.length; i++) {
         if (cancelled) break;
-        const batch = allPhotos.slice(i, i + BATCH_SIZE);
-        const results = await Promise.all(batch.map(scanOne));
-        for (const r of results) {
-          if (r) matches.push(r);
+
+        // Keep preloading ahead
+        if (i % 10 === 0) {
+          preloadBatch(allPhotos.slice(i, i + PRELOAD_AHEAD));
         }
-        setScanProgress(Math.min(i + BATCH_SIZE, allPhotos.length));
-        // Update matches progressively so user sees results appearing
-        setMatchedPhotos([...matches]);
+
+        const photo = allPhotos[i];
+        try {
+          const img = await getImage(photo.fileId);
+          if (!img) { setScanProgress(i + 1); continue; }
+
+          const canvas = resizeToCanvas(img);
+
+          // Pass 1: Quick face detection — any faces at all?
+          const quickDets = await faceapi.detectAllFaces(canvas, detectorFast);
+          if (quickDets.length === 0) { setScanProgress(i + 1); continue; }
+
+          // Pass 2: Full detection with descriptors (only for photos with faces)
+          const fullDets = await faceapi.detectAllFaces(canvas, detectorFull)
+            .withFaceLandmarks()
+            .withFaceDescriptors();
+
+          for (const d of fullDets) {
+            if (faceapi.euclideanDistance(faceDescriptor, d.descriptor) < THRESHOLD) {
+              matches.push(photo);
+              break;
+            }
+          }
+        } catch { /* skip */ }
+
+        setScanProgress(i + 1);
+        // Update matches every 5 photos for progressive display
+        if (i % 5 === 0 || i === allPhotos.length - 1) {
+          setMatchedPhotos([...matches]);
+        }
       }
 
       if (!cancelled) {
