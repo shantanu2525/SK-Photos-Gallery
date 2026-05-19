@@ -197,7 +197,8 @@ function BgParticles() {
 
 /* ═══════════════ LOADER ═══════════════ */
 const LOADING_TIPS = ["Fetching your memories…", "Unwrapping your photo collection…", "Almost there, hang tight…", "Gathering pixels from the cloud…", "Loading beautiful moments…", "Preparing your gallery experience…", "Sorting through your treasures…", "Bringing your photos to life…", "Just a moment, magic is happening…", "Dusting off the photo albums…"];
-const SCAN_TIPS = ["Analyzing faces in your photos…", "Looking for your face in the gallery…", "Matching facial features…", "AI is doing its magic…", "Comparing face descriptors…", "Finding photos with you in them…", "Almost done, recognizing faces…", "Scanning gallery for matches…"];
+const _SCAN_TIPS = ["Analyzing faces in your photos…", "Looking for your face in the gallery…", "Matching facial features…", "AI is doing its magic…", "Comparing face descriptors…", "Finding photos with you in them…", "Almost done, recognizing faces…", "Scanning gallery for matches…"];
+function useCyclingTip(tips: string[], interval = 3000) { const [i, setI] = useState(0); useEffect(() => { const t = setInterval(() => setI(n => (n + 1) % tips.length), interval); return () => clearInterval(t); }, [tips, interval]); return tips[i]; }
 
 function FancyLoader({ tips, progress, total, label }: { tips: string[]; progress: number; total: number; label: string }) {
   const [tipIdx, setTipIdx] = useState(0);
@@ -222,28 +223,243 @@ function FancyLoader({ tips, progress, total, label }: { tips: string[]; progres
 
 /* ═══════════════ FACE CAPTURE ═══════════════ */
 function FaceCapture({ onCapture, onSkip }: { onCapture: (d: Float32Array) => void; onSkip: () => void }) {
-  const [modelsLoaded, setModelsLoaded] = useState(false); const [modelLoading, setModelLoading] = useState(true); const [error, setError] = useState(''); const [processing, setProcessing] = useState(false);
-  const [previewUrl, setPreviewUrl] = useState<string | null>(null); const [useCamera, setUseCamera] = useState(false);
-  const videoRef = useRef<HTMLVideoElement>(null); const streamRef = useRef<MediaStream | null>(null); const fileRef = useRef<HTMLInputElement>(null);
-  useEffect(() => { (async () => { try { setModelLoading(true); await faceapi.nets.tinyFaceDetector.loadFromUri(MODEL_URL); await faceapi.nets.faceLandmark68Net.loadFromUri(MODEL_URL); await faceapi.nets.faceRecognitionNet.loadFromUri(MODEL_URL); setModelsLoaded(true); } catch (e) { console.error(e); setError('Failed to load AI models. Please refresh.'); } setModelLoading(false); })(); }, []);
-  const startCamera = async () => { try { const s = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'user', width: 640, height: 480 } }); streamRef.current = s; if (videoRef.current) { videoRef.current.srcObject = s; videoRef.current.play(); } setUseCamera(true); setPreviewUrl(null); } catch { setError('Camera unavailable. Upload a photo instead.'); } };
-  const stopCamera = () => { streamRef.current?.getTracks().forEach(t => t.stop()); streamRef.current = null; setUseCamera(false); };
-  const captureFromCamera = () => { if (!videoRef.current) return; const c = document.createElement('canvas'); c.width = videoRef.current.videoWidth; c.height = videoRef.current.videoHeight; c.getContext('2d')!.drawImage(videoRef.current, 0, 0); setPreviewUrl(c.toDataURL('image/jpeg')); stopCamera(); };
-  const handleFile = (e: React.ChangeEvent<HTMLInputElement>) => { const f = e.target.files?.[0]; if (!f) return; setPreviewUrl(URL.createObjectURL(f)); setUseCamera(false); stopCamera(); };
-  const detectFace = async () => { if (!previewUrl || !modelsLoaded) return; setProcessing(true); setError(''); try { const img = await loadImage(previewUrl); const d = await faceapi.detectSingleFace(img, new faceapi.TinyFaceDetectorOptions()).withFaceLandmarks().withFaceDescriptor(); if (!d) { setError('No face detected. Try a clear, front-facing photo.'); setProcessing(false); return; } onCapture(d.descriptor); } catch { setError('Detection failed. Try a different photo.'); } setProcessing(false); };
+  const [modelsLoaded, setModelsLoaded] = useState(false);
+  const [modelLoading, setModelLoading] = useState(true);
+  const [error, setError] = useState('');
+  const [processing, setProcessing] = useState(false);
+  const [previewUrl, setPreviewUrl] = useState<string | null>(null);
+  const [useCamera, setUseCamera] = useState(false);
+  const [cameraReady, setCameraReady] = useState(false);
+  const videoRef = useRef<HTMLVideoElement>(null);
+  const streamRef = useRef<MediaStream | null>(null);
+  const selfieRef = useRef<HTMLInputElement>(null);
+  const uploadRef = useRef<HTMLInputElement>(null);
+  const isMobile = /Android|iPhone|iPad|iPod/i.test(navigator.userAgent);
+
+  // Load models
+  useEffect(() => {
+    (async () => {
+      try {
+        setModelLoading(true);
+        await faceapi.nets.tinyFaceDetector.loadFromUri(MODEL_URL);
+        await faceapi.nets.faceLandmark68Net.loadFromUri(MODEL_URL);
+        await faceapi.nets.faceRecognitionNet.loadFromUri(MODEL_URL);
+        setModelsLoaded(true);
+      } catch (e) {
+        console.error(e);
+        setError('Failed to load AI models. Please refresh.');
+      }
+      setModelLoading(false);
+    })();
+  }, []);
+
+  // Start camera (desktop only — mobile uses native capture)
+  const startCamera = async () => {
+    if (isMobile) {
+      // On mobile, trigger native camera via file input with capture attribute
+      selfieRef.current?.click();
+      return;
+    }
+    setError('');
+    try {
+      // Use flexible constraints for compatibility
+      const s = await navigator.mediaDevices.getUserMedia({
+        video: { facingMode: 'user', width: { ideal: 640 }, height: { ideal: 480 } },
+        audio: false,
+      });
+      streamRef.current = s;
+      if (videoRef.current) {
+        videoRef.current.srcObject = s;
+        // Wait for video to actually be playing before allowing capture
+        videoRef.current.onloadedmetadata = () => {
+          videoRef.current?.play().then(() => setCameraReady(true)).catch(() => {});
+        };
+      }
+      setUseCamera(true);
+      setPreviewUrl(null);
+      setCameraReady(false);
+    } catch (e) {
+      console.error('Camera error:', e);
+      setError('Camera unavailable. Use "Upload" or try on mobile.');
+    }
+  };
+
+  const stopCamera = () => {
+    streamRef.current?.getTracks().forEach(t => t.stop());
+    streamRef.current = null;
+    setUseCamera(false);
+    setCameraReady(false);
+  };
+
+  const captureFromCamera = () => {
+    const v = videoRef.current;
+    if (!v || !v.videoWidth || !v.videoHeight) return;
+    const c = document.createElement('canvas');
+    c.width = v.videoWidth;
+    c.height = v.videoHeight;
+    c.getContext('2d')!.drawImage(v, 0, 0);
+    setPreviewUrl(c.toDataURL('image/jpeg', 0.9));
+    stopCamera();
+  };
+
+  // Handle file from camera capture (mobile) or gallery upload
+  const handleFile = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    // Reset the input so same file can be re-selected
+    e.target.value = '';
+    setPreviewUrl(URL.createObjectURL(file));
+    setUseCamera(false);
+    stopCamera();
+    setError('');
+  };
+
+  const detectFace = async () => {
+    if (!previewUrl || !modelsLoaded) return;
+    setProcessing(true);
+    setError('');
+    try {
+      const img = await loadImage(previewUrl);
+      const d = await faceapi
+        .detectSingleFace(img, new faceapi.TinyFaceDetectorOptions({ inputSize: 320, scoreThreshold: 0.3 }))
+        .withFaceLandmarks()
+        .withFaceDescriptor();
+      if (!d) {
+        setError('No face detected. Make sure your face is clearly visible and well-lit.');
+        setProcessing(false);
+        return;
+      }
+      onCapture(d.descriptor);
+    } catch (e) {
+      console.error('Face detect error:', e);
+      setError('Detection failed. Try a different photo.');
+    }
+    setProcessing(false);
+  };
+
   useEffect(() => () => stopCamera(), []);
+
   return (
     <div className="min-h-screen flex items-center justify-center bg-dark-900 p-4 relative overflow-hidden"><BgParticles />
       <div className="relative z-10 w-full max-w-lg"><div className="glass-strong rounded-[28px] p-7 shadow-2xl shadow-black/50 anim-scale-in">
-        <div className="flex flex-col items-center mb-7"><div className="relative mb-4"><div className="w-20 h-20 rounded-[22px] bg-gradient-to-br from-pink-500 via-rose-500 to-violet-600 flex items-center justify-center shadow-xl shadow-pink-600/30 anim-glow"><ScanFace className="w-10 h-10 text-white drop-shadow" /></div><div className="absolute -top-1 -right-1 w-6 h-6 rounded-full bg-gradient-to-br from-emerald-400 to-teal-500 flex items-center justify-center shadow-md animate-pulse"><Sparkles className="w-3 h-3 text-white" /></div></div><h1 className="text-2xl font-bold text-white tracking-tight">Find Your Photos</h1><p className="text-white/40 text-sm mt-1 text-center max-w-xs leading-relaxed">Snap a selfie or upload your photo — our AI will find every photo with you in it</p></div>
-        {modelLoading && <div className="flex flex-col items-center py-10"><div className="relative w-12 h-12 mb-4"><div className="absolute inset-0 rounded-full border-2 border-purple-500/20" /><div className="absolute inset-0 rounded-full border-2 border-transparent border-t-purple-400 animate-spin" /></div><p className="text-white/40 text-sm">Initializing AI…</p><p className="text-white/20 text-xs mt-1">First time may take a moment</p></div>}
-        {!modelLoading && <div className="space-y-4">
-          <div className="relative aspect-[4/3] bg-dark-700/50 rounded-2xl overflow-hidden border border-white/[0.06] shadow-inner">{useCamera && <video ref={videoRef} autoPlay playsInline muted className="w-full h-full object-cover" />}{previewUrl && !useCamera && <img src={previewUrl} alt="Your face" className="w-full h-full object-cover" />}{!useCamera && !previewUrl && <div className="absolute inset-0 flex flex-col items-center justify-center text-white/15 gap-3"><div className="w-20 h-20 rounded-2xl border-2 border-dashed border-white/10 flex items-center justify-center"><ScanFace className="w-10 h-10" /></div><p className="text-sm font-light">Your photo appears here</p></div>}{useCamera && <button onClick={captureFromCamera} className="absolute bottom-4 left-1/2 -translate-x-1/2 w-16 h-16 rounded-full bg-white/90 hover:bg-white border-[5px] border-white/30 flex items-center justify-center shadow-2xl transition-all active:scale-90 hover:scale-105"><div className="w-11 h-11 rounded-full bg-gradient-to-br from-red-500 to-rose-600" /></button>}{previewUrl && !useCamera && <button onClick={() => { setPreviewUrl(null); setError(''); }} className="absolute top-3 right-3 p-2 bg-black/50 hover:bg-black/70 rounded-full text-white/60 hover:text-white transition backdrop-blur"><X className="w-4 h-4" /></button>}</div>
-          <div className="grid grid-cols-2 gap-3"><button onClick={startCamera} disabled={useCamera || !modelsLoaded} className="py-3.5 glass rounded-2xl text-white text-sm font-medium transition-all hover:bg-white/[0.08] flex items-center justify-center gap-2 disabled:opacity-30 group"><Camera className="w-5 h-5 text-pink-400 group-hover:scale-110 transition-transform" /> Take Selfie</button><button onClick={() => fileRef.current?.click()} disabled={!modelsLoaded} className="py-3.5 glass rounded-2xl text-white text-sm font-medium transition-all hover:bg-white/[0.08] flex items-center justify-center gap-2 disabled:opacity-30 group"><UploadCloud className="w-5 h-5 text-violet-400 group-hover:scale-110 transition-transform" /> Upload</button><input ref={fileRef} type="file" accept="image/*" className="hidden" onChange={handleFile} /></div>
-          {error && <p className="text-red-400 text-xs flex items-center gap-2 bg-red-500/10 border border-red-500/15 rounded-xl px-4 py-3"><AlertCircle className="w-4 h-4 shrink-0" />{error}</p>}
-          {previewUrl && <button onClick={detectFace} disabled={processing || !modelsLoaded} className="w-full py-4 rounded-2xl font-semibold text-[15px] text-white bg-gradient-to-r from-pink-600 via-rose-600 to-violet-600 hover:from-pink-500 hover:via-rose-500 hover:to-violet-500 shadow-xl shadow-pink-600/20 transition-all active:scale-[.97] disabled:opacity-50 flex items-center justify-center gap-2.5 grad-move">{processing ? <><span className="w-5 h-5 border-2 border-white/30 border-t-white rounded-full animate-spin" />Detecting face…</> : <><UserCheck className="w-5 h-5" />Find My Photos</>}</button>}
-          <button onClick={onSkip} className="w-full py-3.5 rounded-2xl text-sm font-medium text-white/50 hover:text-white glass hover:bg-white/[0.06] transition-all active:scale-[.98] flex items-center justify-center gap-2.5"><Images className="w-5 h-5" /> Skip — View All Photos</button>
-        </div>}
+        {/* Header */}
+        <div className="flex flex-col items-center mb-7">
+          <div className="relative mb-4">
+            <div className="w-20 h-20 rounded-[22px] bg-gradient-to-br from-pink-500 via-rose-500 to-violet-600 flex items-center justify-center shadow-xl shadow-pink-600/30 anim-glow">
+              <ScanFace className="w-10 h-10 text-white drop-shadow" />
+            </div>
+            <div className="absolute -top-1 -right-1 w-6 h-6 rounded-full bg-gradient-to-br from-emerald-400 to-teal-500 flex items-center justify-center shadow-md animate-pulse">
+              <Sparkles className="w-3 h-3 text-white" />
+            </div>
+          </div>
+          <h1 className="text-2xl font-bold text-white tracking-tight">Find Your Photos</h1>
+          <p className="text-white/40 text-sm mt-1 text-center max-w-xs leading-relaxed">
+            {isMobile ? 'Take a selfie or pick a photo from your gallery' : 'Snap a selfie or upload your photo — AI will find you'}
+          </p>
+        </div>
+
+        {/* Model loading */}
+        {modelLoading && (
+          <div className="flex flex-col items-center py-10">
+            <div className="relative w-12 h-12 mb-4">
+              <div className="absolute inset-0 rounded-full border-2 border-purple-500/20" />
+              <div className="absolute inset-0 rounded-full border-2 border-transparent border-t-purple-400 animate-spin" />
+            </div>
+            <p className="text-white/40 text-sm">Initializing AI…</p>
+            <p className="text-white/20 text-xs mt-1">First time may take a moment</p>
+          </div>
+        )}
+
+        {/* Main content */}
+        {!modelLoading && (
+          <div className="space-y-4">
+            {/* Preview area */}
+            <div className="relative aspect-[4/3] bg-dark-700/50 rounded-2xl overflow-hidden border border-white/[0.06] shadow-inner">
+              {/* Live camera feed (desktop) */}
+              {useCamera && (
+                <video ref={videoRef} autoPlay playsInline muted
+                  className="w-full h-full object-cover"
+                  style={{ transform: 'scaleX(-1)' }} />
+              )}
+              {/* Preview of captured/uploaded image */}
+              {previewUrl && !useCamera && (
+                <img src={previewUrl} alt="Your face" className="w-full h-full object-cover" />
+              )}
+              {/* Empty state */}
+              {!useCamera && !previewUrl && (
+                <div className="absolute inset-0 flex flex-col items-center justify-center text-white/15 gap-3">
+                  <div className="w-20 h-20 rounded-2xl border-2 border-dashed border-white/10 flex items-center justify-center">
+                    <ScanFace className="w-10 h-10" />
+                  </div>
+                  <p className="text-sm font-light">Your photo appears here</p>
+                </div>
+              )}
+              {/* Camera shutter button */}
+              {useCamera && cameraReady && (
+                <button onClick={captureFromCamera}
+                  className="absolute bottom-4 left-1/2 -translate-x-1/2 w-16 h-16 rounded-full bg-white/90 hover:bg-white border-[5px] border-white/30 flex items-center justify-center shadow-2xl transition-all active:scale-90 hover:scale-105">
+                  <div className="w-11 h-11 rounded-full bg-gradient-to-br from-red-500 to-rose-600" />
+                </button>
+              )}
+              {/* Camera loading indicator */}
+              {useCamera && !cameraReady && (
+                <div className="absolute inset-0 flex items-center justify-center bg-black/30">
+                  <div className="w-8 h-8 border-2 border-white/20 border-t-white/60 rounded-full animate-spin" />
+                </div>
+              )}
+              {/* Clear button on preview */}
+              {previewUrl && !useCamera && (
+                <button onClick={() => { setPreviewUrl(null); setError(''); }}
+                  className="absolute top-3 right-3 p-2 bg-black/50 hover:bg-black/70 rounded-full text-white/60 hover:text-white transition backdrop-blur">
+                  <X className="w-4 h-4" />
+                </button>
+              )}
+            </div>
+
+            {/* Action buttons */}
+            <div className="grid grid-cols-2 gap-3">
+              {/* Take Selfie — on mobile uses native camera, on desktop uses getUserMedia */}
+              <button onClick={startCamera} disabled={useCamera || !modelsLoaded}
+                className="py-3.5 glass rounded-2xl text-white text-sm font-medium transition-all hover:bg-white/[0.08] flex items-center justify-center gap-2 disabled:opacity-30 group">
+                <Camera className="w-5 h-5 text-pink-400 group-hover:scale-110 transition-transform" /> Take Selfie
+              </button>
+              {/* Upload from gallery */}
+              <button onClick={() => uploadRef.current?.click()} disabled={!modelsLoaded}
+                className="py-3.5 glass rounded-2xl text-white text-sm font-medium transition-all hover:bg-white/[0.08] flex items-center justify-center gap-2 disabled:opacity-30 group">
+                <UploadCloud className="w-5 h-5 text-violet-400 group-hover:scale-110 transition-transform" /> Upload
+              </button>
+              {/* Hidden file inputs */}
+              {/* Mobile selfie — uses capture="user" to open front camera natively */}
+              <input ref={selfieRef} type="file" accept="image/*" capture="user" className="hidden" onChange={handleFile} />
+              {/* Gallery upload — no capture attribute, opens file picker */}
+              <input ref={uploadRef} type="file" accept="image/*" className="hidden" onChange={handleFile} />
+            </div>
+
+            {/* Error */}
+            {error && (
+              <p className="text-red-400 text-xs flex items-center gap-2 bg-red-500/10 border border-red-500/15 rounded-xl px-4 py-3">
+                <AlertCircle className="w-4 h-4 shrink-0" />{error}
+              </p>
+            )}
+
+            {/* Find My Photos button */}
+            {previewUrl && (
+              <button onClick={detectFace} disabled={processing || !modelsLoaded}
+                className="w-full py-4 rounded-2xl font-semibold text-[15px] text-white bg-gradient-to-r from-pink-600 via-rose-600 to-violet-600 hover:from-pink-500 hover:via-rose-500 hover:to-violet-500 shadow-xl shadow-pink-600/20 transition-all active:scale-[.97] disabled:opacity-50 flex items-center justify-center gap-2.5 grad-move">
+                {processing
+                  ? <><span className="w-5 h-5 border-2 border-white/30 border-t-white rounded-full animate-spin" />Detecting face…</>
+                  : <><UserCheck className="w-5 h-5" />Find My Photos</>
+                }
+              </button>
+            )}
+
+            {/* Skip */}
+            <button onClick={onSkip}
+              className="w-full py-3.5 rounded-2xl text-sm font-medium text-white/50 hover:text-white glass hover:bg-white/[0.06] transition-all active:scale-[.98] flex items-center justify-center gap-2.5">
+              <Images className="w-5 h-5" /> Skip — View All Photos
+            </button>
+          </div>
+        )}
       </div></div>
     </div>
   );
@@ -508,6 +724,7 @@ function Gallery({ faceDescriptor, onLogout }: { faceDescriptor: Float32Array | 
   const [lightbox, setLightbox] = useState<number | null>(null); const [layout, setLayout] = useState<'grid' | 'masonry'>('grid'); const [query, setQuery] = useState('');
   const [loaded, setLoaded] = useState<Set<string>>(new Set()); const [failed, setFailed] = useState<Set<string>>(new Set());
   const [foldersLoaded, setFoldersLoaded] = useState(0); const [scanProgress, setScanProgress] = useState(0); const [scanTotal, setScanTotal] = useState(0); const [showAll, setShowAll] = useState(false);
+  const scanTip = useCyclingTip(_SCAN_TIPS);
 
   const loadPhotos = useCallback(async () => {
     setLoadingPhotos(true); setError(''); setLoaded(new Set()); setFailed(new Set()); setAllPhotos([]); setMatchedPhotos(null); setFoldersLoaded(0);
@@ -545,23 +762,81 @@ function Gallery({ faceDescriptor, onLogout }: { faceDescriptor: Float32Array | 
   }, []);
   useEffect(() => { loadPhotos(); }, [loadPhotos]);
 
+  // Face scan — fast parallel batched processing
   useEffect(() => {
-    if (loadingPhotos || !faceDescriptor || allPhotos.length === 0) return; let cancelled = false; const TH = 0.55;
-    (async () => { setScanning(true); setScanTotal(allPhotos.length); setScanProgress(0); const matches: Photo[] = [];
-    for (let i = 0; i < allPhotos.length; i++) { if (cancelled) break; try { const img = await loadImage(allPhotos[i].thumb); const dets = await faceapi.detectAllFaces(img, new faceapi.TinyFaceDetectorOptions()).withFaceLandmarks().withFaceDescriptors(); for (const d of dets) { if (faceapi.euclideanDistance(faceDescriptor, d.descriptor) < TH) { matches.push(allPhotos[i]); break; } } } catch {} setScanProgress(i + 1); }
-    if (!cancelled) { setMatchedPhotos(matches); setScanning(false); } })(); return () => { cancelled = true; };
+    if (loadingPhotos || !faceDescriptor || allPhotos.length === 0) return;
+    let cancelled = false;
+    const THRESHOLD = 0.55;
+    const BATCH_SIZE = 8; // process 8 photos in parallel
+    const detectorOptions = new faceapi.TinyFaceDetectorOptions({ inputSize: 224, scoreThreshold: 0.3 });
+
+    // Use small thumbnails for scanning (w150 instead of w400)
+    const makeScanUrl = (fid: string) => `https://lh3.googleusercontent.com/d/${fid}=w160`;
+
+    // Scan a single photo — returns the photo if face matches, null otherwise
+    const scanOne = async (photo: Photo): Promise<Photo | null> => {
+      try {
+        const img = await loadImage(makeScanUrl(photo.fileId));
+        const dets = await faceapi.detectAllFaces(img, detectorOptions).withFaceLandmarks().withFaceDescriptors();
+        for (const d of dets) {
+          if (faceapi.euclideanDistance(faceDescriptor, d.descriptor) < THRESHOLD) return photo;
+        }
+      } catch { /* skip */ }
+      return null;
+    };
+
+    (async () => {
+      setScanning(true);
+      setScanTotal(allPhotos.length);
+      setScanProgress(0);
+      const matches: Photo[] = [];
+
+      // Process in batches of BATCH_SIZE
+      for (let i = 0; i < allPhotos.length; i += BATCH_SIZE) {
+        if (cancelled) break;
+        const batch = allPhotos.slice(i, i + BATCH_SIZE);
+        const results = await Promise.all(batch.map(scanOne));
+        for (const r of results) {
+          if (r) matches.push(r);
+        }
+        setScanProgress(Math.min(i + BATCH_SIZE, allPhotos.length));
+        // Update matches progressively so user sees results appearing
+        setMatchedPhotos([...matches]);
+      }
+
+      if (!cancelled) {
+        setMatchedPhotos(matches);
+        setScanning(false);
+      }
+    })();
+
+    return () => { cancelled = true; };
   }, [loadingPhotos, faceDescriptor, allPhotos]);
 
   const displayPhotos = (!faceDescriptor || showAll) ? allPhotos : (matchedPhotos ?? []);
-  const isReady = !loadingPhotos && !scanning;
+  const isReady = !loadingPhotos;
   const visible = displayPhotos.filter(p => !failed.has(p.id)).filter(p => !query || p.name.toLowerCase().includes(query.toLowerCase()) || p.folder.toLowerCase().includes(query.toLowerCase()));
 
   return (
     <div className="min-h-screen bg-dark-900">
       {loadingPhotos && <FancyLoader tips={LOADING_TIPS} progress={foldersLoaded} total={folders.length} label="albums loaded" />}
-      {!loadingPhotos && scanning && <FancyLoader tips={SCAN_TIPS} progress={scanProgress} total={scanTotal} label="photos scanned" />}
       {isReady && (<>
-        <header className="sticky top-0 z-30 glass-strong border-b border-white/[0.04]"><div className="max-w-[1440px] mx-auto px-4 md:px-6 py-3 flex items-center justify-between gap-4"><div className="flex items-center gap-3 min-w-0"><div className="w-9 h-9 rounded-xl bg-gradient-to-br from-purple-600 to-indigo-600 flex items-center justify-center shrink-0 shadow-lg shadow-purple-800/20 anim-glow"><Images className="w-[18px] h-[18px] text-white" /></div><div className="min-w-0"><h2 className="text-white font-semibold text-[15px] truncate">{faceDescriptor && !showAll ? '🎯 Your Photos' : '📸 Gallery'}</h2><p className="text-white/30 text-[11px]">{faceDescriptor && !showAll ? `${visible.length} with your face` : `${visible.length} photos`}</p></div></div><div className="flex items-center gap-2">{faceDescriptor && <button onClick={() => setShowAll(v => !v)} className={`hidden sm:flex items-center gap-1.5 px-3.5 py-2 rounded-xl text-xs font-semibold transition-all ${showAll ? 'bg-pink-600/20 text-pink-300 border border-pink-500/20' : 'glass text-white/50 hover:text-white/80'}`}>{showAll ? <><ScanFace className="w-3.5 h-3.5" />My Photos</> : <><Layers className="w-3.5 h-3.5" />All Photos</>}</button>}<div className="relative hidden sm:block"><Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-white/20" /><input value={query} onChange={e => setQuery(e.target.value)} placeholder="Search…" className="pl-9 pr-4 py-2 w-48 glass rounded-xl text-white text-xs placeholder-white/20 focus:outline-none focus:ring-1 focus:ring-purple-500/30" /></div><div className="flex glass rounded-xl p-0.5"><button onClick={() => setLayout('grid')} className={`p-2 rounded-lg transition ${layout === 'grid' ? 'bg-purple-600 text-white shadow-md' : 'text-white/30 hover:text-white/60'}`}><Grid3X3 className="w-4 h-4" /></button><button onClick={() => setLayout('masonry')} className={`p-2 rounded-lg transition ${layout === 'masonry' ? 'bg-purple-600 text-white shadow-md' : 'text-white/30 hover:text-white/60'}`}><LayoutGrid className="w-4 h-4" /></button></div><button onClick={loadPhotos} className="p-2 text-white/25 hover:text-white glass rounded-xl transition"><RefreshCw className="w-4 h-4" /></button><button onClick={onLogout} className="p-2 text-white/25 hover:text-red-400 glass rounded-xl transition"><LogOut className="w-[18px] h-[18px]" /></button></div></div></header>
+        {/* Scanning progress bar — inline, not blocking */}
+        {scanning && faceDescriptor && (
+          <div className="fixed top-0 left-0 right-0 z-40">
+            <div className="h-1 bg-white/[0.03]">
+              <div className="h-full bg-gradient-to-r from-pink-500 via-purple-500 to-indigo-500 transition-all duration-300 ease-out grad-move"
+                style={{ width: `${scanTotal > 0 ? Math.round((scanProgress / scanTotal) * 100) : 0}%` }} />
+            </div>
+            <div className="glass-strong border-b border-white/5 px-4 py-2 flex items-center justify-center gap-3">
+              <span className="w-4 h-4 border-2 border-purple-400/30 border-t-purple-400 rounded-full animate-spin" />
+              <span className="text-white/50 text-xs hidden sm:inline">{scanTip}</span>
+              <span className="text-white/50 text-xs sm:hidden">Scanning… <span className="text-white/70 font-mono">{scanProgress}/{scanTotal}</span></span>
+              <span className="text-emerald-400/70 text-xs font-medium">{matchedPhotos?.length || 0} found</span>
+            </div>
+          </div>
+        )}
+        <header className={`sticky top-0 z-30 glass-strong border-b border-white/[0.04] ${scanning ? 'mt-[52px]' : ''}`}><div className="max-w-[1440px] mx-auto px-4 md:px-6 py-3 flex items-center justify-between gap-4"><div className="flex items-center gap-3 min-w-0"><div className="w-9 h-9 rounded-xl bg-gradient-to-br from-purple-600 to-indigo-600 flex items-center justify-center shrink-0 shadow-lg shadow-purple-800/20 anim-glow"><Images className="w-[18px] h-[18px] text-white" /></div><div className="min-w-0"><h2 className="text-white font-semibold text-[15px] truncate">{faceDescriptor && !showAll ? '🎯 Your Photos' : '📸 Gallery'}</h2><p className="text-white/30 text-[11px]">{faceDescriptor && !showAll ? `${visible.length} with your face` : `${visible.length} photos`}</p></div></div><div className="flex items-center gap-2">{faceDescriptor && <button onClick={() => setShowAll(v => !v)} className={`hidden sm:flex items-center gap-1.5 px-3.5 py-2 rounded-xl text-xs font-semibold transition-all ${showAll ? 'bg-pink-600/20 text-pink-300 border border-pink-500/20' : 'glass text-white/50 hover:text-white/80'}`}>{showAll ? <><ScanFace className="w-3.5 h-3.5" />My Photos</> : <><Layers className="w-3.5 h-3.5" />All Photos</>}</button>}<div className="relative hidden sm:block"><Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-white/20" /><input value={query} onChange={e => setQuery(e.target.value)} placeholder="Search…" className="pl-9 pr-4 py-2 w-48 glass rounded-xl text-white text-xs placeholder-white/20 focus:outline-none focus:ring-1 focus:ring-purple-500/30" /></div><div className="flex glass rounded-xl p-0.5"><button onClick={() => setLayout('grid')} className={`p-2 rounded-lg transition ${layout === 'grid' ? 'bg-purple-600 text-white shadow-md' : 'text-white/30 hover:text-white/60'}`}><Grid3X3 className="w-4 h-4" /></button><button onClick={() => setLayout('masonry')} className={`p-2 rounded-lg transition ${layout === 'masonry' ? 'bg-purple-600 text-white shadow-md' : 'text-white/30 hover:text-white/60'}`}><LayoutGrid className="w-4 h-4" /></button></div><button onClick={loadPhotos} className="p-2 text-white/25 hover:text-white glass rounded-xl transition"><RefreshCw className="w-4 h-4" /></button><button onClick={onLogout} className="p-2 text-white/25 hover:text-red-400 glass rounded-xl transition"><LogOut className="w-[18px] h-[18px]" /></button></div></div></header>
         <main className="max-w-[1440px] mx-auto px-4 md:px-6 py-6">
           {faceDescriptor && !error && <button onClick={() => setShowAll(v => !v)} className={`sm:hidden w-full mb-5 flex items-center justify-center gap-2 py-3 rounded-2xl text-sm font-semibold transition-all ${showAll ? 'bg-pink-600/20 text-pink-300 border border-pink-500/20' : 'glass text-white/50'}`}>{showAll ? <><ScanFace className="w-4 h-4" />Show My Photos Only</> : <><Layers className="w-4 h-4" />Show All Photos</>}</button>}
           {error && <div className="flex flex-col items-center py-32 anim-fade-up"><Images className="w-14 h-14 text-white/[0.06] mb-4" /><p className="text-white/35 text-sm text-center max-w-sm">{error}</p><button onClick={loadPhotos} className="mt-5 px-5 py-2.5 glass text-purple-300 text-xs rounded-xl transition hover:bg-white/5">Retry</button></div>}
