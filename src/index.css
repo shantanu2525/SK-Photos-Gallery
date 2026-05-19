@@ -1,0 +1,56 @@
+@import "tailwindcss";
+
+@theme {
+  --color-dark-900: #06060b;
+  --color-dark-800: #0e0e18;
+  --color-dark-700: #161625;
+  --color-dark-600: #1f1f33;
+  --color-dark-500: #2a2a42;
+  --color-accent: #7c3aed;
+  --color-accent-light: #a78bfa;
+}
+
+html { scroll-behavior: smooth; }
+body { background: var(--color-dark-900); }
+
+::-webkit-scrollbar { width: 6px; height: 6px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: rgba(124,58,237,.25); border-radius: 3px; }
+::-webkit-scrollbar-thumb:hover { background: rgba(124,58,237,.45); }
+::selection { background: rgba(124,58,237,.35); color: #fff; }
+
+/* ─── Animations ─── */
+@keyframes fadeUp   { from{opacity:0;transform:translateY(18px)} to{opacity:1;transform:translateY(0)} }
+@keyframes scaleIn  { from{opacity:0;transform:scale(.9)}       to{opacity:1;transform:scale(1)} }
+@keyframes shimmer  { 0%{background-position:-200% 0} 100%{background-position:200% 0} }
+@keyframes float    { 0%,100%{transform:translateY(0) rotate(0deg)} 25%{transform:translateY(-10px) rotate(2deg)} 75%{transform:translateY(5px) rotate(-1deg)} }
+@keyframes orbit    { from{transform:rotate(0deg) translateX(62px) rotate(0deg)} to{transform:rotate(360deg) translateX(62px) rotate(-360deg)} }
+@keyframes pulse3   { 0%,100%{opacity:.4} 50%{opacity:1} }
+@keyframes gradMove { 0%{background-position:0% 50%} 50%{background-position:100% 50%} 100%{background-position:0% 50%} }
+@keyframes glow     { 0%,100%{box-shadow:0 0 20px rgba(124,58,237,.15)} 50%{box-shadow:0 0 40px rgba(124,58,237,.3)} }
+@keyframes cardIn   { from{opacity:0;transform:translateY(20px) scale(.97)} to{opacity:1;transform:translateY(0) scale(1)} }
+@keyframes spin-slow { from{transform:rotate(0deg)} to{transform:rotate(360deg)} }
+
+.anim-fade-up    { animation: fadeUp .5s cubic-bezier(.16,1,.3,1) both }
+.anim-scale-in   { animation: scaleIn .35s cubic-bezier(.16,1,.3,1) both }
+.anim-card-in    { animation: cardIn .5s cubic-bezier(.16,1,.3,1) both }
+.shimmer         { background:linear-gradient(90deg,rgba(255,255,255,.02) 25%,rgba(255,255,255,.06) 50%,rgba(255,255,255,.02) 75%); background-size:200% 100%; animation:shimmer 1.5s infinite }
+.anim-float      { animation: float 3s ease-in-out infinite }
+.anim-orbit      { animation: orbit 4s linear infinite }
+.anim-glow       { animation: glow 3s ease-in-out infinite }
+.grad-move       { background-size:200% 200%; animation:gradMove 6s ease infinite }
+.spin-slow       { animation: spin-slow 12s linear infinite }
+
+/* Glassmorphism */
+.glass {
+  background: rgba(14,14,24,.6);
+  backdrop-filter: blur(24px) saturate(1.4);
+  -webkit-backdrop-filter: blur(24px) saturate(1.4);
+  border: 1px solid rgba(255,255,255,.08);
+}
+.glass-strong {
+  background: rgba(14,14,24,.8);
+  backdrop-filter: blur(40px) saturate(1.6);
+  -webkit-backdrop-filter: blur(40px) saturate(1.6);
+  border: 1px solid rgba(255,255,255,.1);
+}
