@@ -844,27 +844,140 @@ async function downloadPhoto(photo: Photo) {
 
 /* ═══════════════ LIGHTBOX ═══════════════ */
 function Lightbox({ photos, index, onClose, onNav }: { photos: Photo[]; index: number; onClose: () => void; onNav: (i: number) => void }) {
-  const [zoom, setZoom] = useState(1); const [rot, setRot] = useState(0); const [loading, setLoading] = useState(true); const [imgErr, setImgErr] = useState(false);
+  const [zoom, setZoom] = useState(1);
+  const [rot, setRot] = useState(0);
+  const [pan, setPan] = useState({ x: 0, y: 0 });
+  const [loading, setLoading] = useState(true);
+  const [imgErr, setImgErr] = useState(false);
+  const [downloading, setDownloading] = useState(false);
   const photo = photos[index];
-  const reset = useCallback(() => { setZoom(1); setRot(0); setLoading(true); setImgErr(false); }, []);
+
+  const gesture = useRef({ mode: 'none' as 'none' | 'pan' | 'pinch', startDistance: 0, startZoom: 1, startPanX: 0, startPanY: 0, startX: 0, startY: 0 });
+  const imageAreaRef = useRef<HTMLDivElement>(null);
+
+  const reset = useCallback(() => { setZoom(1); setRot(0); setPan({ x: 0, y: 0 }); setLoading(true); setImgErr(false); }, []);
   const next = useCallback(() => { if (index < photos.length - 1) { onNav(index + 1); reset(); } }, [index, photos.length, onNav, reset]);
   const prev = useCallback(() => { if (index > 0) { onNav(index - 1); reset(); } }, [index, onNav, reset]);
-  useEffect(() => { const h = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose(); if (e.key === 'ArrowRight') next(); if (e.key === 'ArrowLeft') prev(); }; window.addEventListener('keydown', h); document.body.style.overflow = 'hidden'; return () => { window.removeEventListener('keydown', h); document.body.style.overflow = ''; }; }, [next, prev, onClose]);
+
+  useEffect(() => {
+    const h = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose(); if (e.key === 'ArrowRight') next(); if (e.key === 'ArrowLeft') prev(); };
+    window.addEventListener('keydown', h);
+    document.body.style.overflow = 'hidden';
+
+    // Disable browser pinch-zoom while lightbox is open
+    const viewport = document.querySelector('meta[name="viewport"]');
+    const prevViewport = viewport?.getAttribute('content') || '';
+    viewport?.setAttribute('content', 'width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no');
+
+    return () => {
+      window.removeEventListener('keydown', h);
+      document.body.style.overflow = '';
+      if (viewport) viewport.setAttribute('content', prevViewport || 'width=device-width, initial-scale=1.0');
+    };
+  }, [next, prev, onClose]);
+
   const thumbRef = useRef<HTMLDivElement>(null);
   useEffect(() => { thumbRef.current?.querySelector(`[data-idx="${index}"]`)?.scrollIntoView({ inline: 'center', behavior: 'smooth', block: 'nearest' }); }, [index]);
+
   const [src, setSrc] = useState(photo.full);
   useEffect(() => { setSrc(photo.full); setImgErr(false); setLoading(true); }, [photo.full]);
   const handleError = () => { if (src === photo.full) setSrc(`https://drive.google.com/thumbnail?id=${photo.fileId}&sz=w1920`); else if (src.includes('thumbnail?id=')) setSrc(photo.dl); else { setImgErr(true); setLoading(false); } };
 
   const handleDownload = async () => {
+    setDownloading(true);
     await downloadPhoto(photo);
+    setDownloading(false);
+  };
+
+  const touchDistance = (touches: { [index: number]: { clientX: number; clientY: number }; length: number }) => {
+    const dx = touches[0].clientX - touches[1].clientX;
+    const dy = touches[0].clientY - touches[1].clientY;
+    return Math.hypot(dx, dy);
+  };
+
+  const onTouchStart = (e: React.TouchEvent) => {
+    if (e.touches.length === 2) {
+      gesture.current.mode = 'pinch';
+      gesture.current.startDistance = touchDistance(e.touches);
+      gesture.current.startZoom = zoom;
+    } else if (e.touches.length === 1 && zoom > 1) {
+      gesture.current.mode = 'pan';
+      gesture.current.startX = e.touches[0].clientX;
+      gesture.current.startY = e.touches[0].clientY;
+      gesture.current.startPanX = pan.x;
+      gesture.current.startPanY = pan.y;
+    }
+  };
+
+  const onTouchMove = (e: React.TouchEvent) => {
+    if (gesture.current.mode === 'pinch' && e.touches.length === 2) {
+      e.preventDefault();
+      const dist = touchDistance(e.touches);
+      const nextZoom = Math.max(1, Math.min(4, gesture.current.startZoom * (dist / gesture.current.startDistance)));
+      setZoom(nextZoom);
+      if (nextZoom <= 1.02) setPan({ x: 0, y: 0 });
+    } else if (gesture.current.mode === 'pan' && e.touches.length === 1 && zoom > 1) {
+      e.preventDefault();
+      const dx = e.touches[0].clientX - gesture.current.startX;
+      const dy = e.touches[0].clientY - gesture.current.startY;
+      setPan({ x: gesture.current.startPanX + dx, y: gesture.current.startPanY + dy });
+    }
+  };
+
+  const onTouchEnd = () => {
+    gesture.current.mode = 'none';
+    if (zoom <= 1.02) {
+      setZoom(1);
+      setPan({ x: 0, y: 0 });
+    }
   };
 
   return (
     <div className="fixed inset-0 z-50 bg-black/[0.97] backdrop-blur-xl flex flex-col anim-scale-in">
-      <div className="flex items-center justify-between px-4 py-3 shrink-0 bg-gradient-to-b from-black/60 to-transparent"><span className="text-white/50 text-sm font-mono tabular-nums"><span className="text-white font-semibold">{index + 1}</span><span className="text-white/20"> / </span>{photos.length}</span><div className="flex items-center gap-1">{[{ icon: ZoomIn, fn: () => setZoom(z => Math.min(z + .25, 4)) }, { icon: ZoomOut, fn: () => setZoom(z => Math.max(z - .25, .5)) }, { icon: RotateCw, fn: () => setRot(r => r + 90) }].map((b, i) => (<button key={i} onClick={b.fn} className="p-2.5 text-white/30 hover:text-white hover:bg-white/10 rounded-xl transition"><b.icon className="w-5 h-5" /></button>))}<button onClick={handleDownload} className="p-2.5 text-white/30 hover:text-white hover:bg-white/10 rounded-xl transition" title="Download"><Download className="w-5 h-5" /></button><div className="w-px h-6 bg-white/10 mx-1" /><button onClick={onClose} className="p-2.5 text-white/30 hover:text-white hover:bg-white/10 rounded-xl transition"><X className="w-5 h-5" /></button></div></div>
-      <div className="flex-1 flex items-center justify-center relative overflow-hidden select-none px-4"><button onClick={prev} disabled={index === 0} className="absolute left-3 z-10 p-3 rounded-2xl bg-white/5 hover:bg-white/10 text-white/50 hover:text-white disabled:opacity-0 transition-all backdrop-blur"><ChevronLeft className="w-7 h-7" /></button>{loading && !imgErr && <div className="absolute inset-0 flex items-center justify-center"><div className="w-10 h-10 border-2 border-white/10 border-t-amber-400 rounded-full animate-spin" /></div>}{imgErr ? <div className="flex flex-col items-center gap-4 text-white/25"><Images className="w-14 h-14" /><p className="text-sm">Could not load</p><button onClick={handleDownload} className="text-xs text-purple-400 underline underline-offset-2 hover:text-purple-300 transition">Download Original</button></div> : <img src={src} alt={photo.name} draggable={false} className="max-w-full max-h-full object-contain transition-all duration-300 rounded-lg" style={{ transform: `scale(${zoom}) rotate(${rot}deg)`, opacity: loading ? 0 : 1 }} onLoad={() => setLoading(false)} onError={handleError} referrerPolicy="no-referrer" />}<button onClick={next} disabled={index === photos.length - 1} className="absolute right-3 z-10 p-3 rounded-2xl bg-white/5 hover:bg-white/10 text-white/50 hover:text-white disabled:opacity-0 transition-all backdrop-blur"><ChevronRight className="w-7 h-7" /></button></div>
-      <div className="bg-gradient-to-t from-black/60 to-transparent pt-2 pb-3"><div className="text-center mb-2"><span className="text-white/30 text-[11px] truncate block max-w-sm mx-auto">{photo.name}</span></div><div ref={thumbRef} className="flex items-center justify-start overflow-x-auto gap-2 px-4">{photos.map((p, i) => (<button key={`${p.id}-${i}`} data-idx={i} onClick={() => { onNav(i); reset(); }} className={`shrink-0 w-14 h-14 rounded-xl overflow-hidden border-2 transition-all duration-200 ${i === index ? 'border-amber-500 ring-2 ring-amber-500/30 scale-110' : 'border-transparent opacity-35 hover:opacity-60'}`}><img src={p.thumb} alt="" className="w-full h-full object-cover" loading="lazy" referrerPolicy="no-referrer" /></button>))}</div></div>
+      <div className="flex items-center justify-between px-4 py-3 shrink-0 bg-gradient-to-b from-black/60 to-transparent">
+        <span className="text-white/50 text-sm font-mono tabular-nums"><span className="text-white font-semibold">{index + 1}</span><span className="text-white/20"> / </span>{photos.length}</span>
+        <div className="flex items-center gap-1">
+          {[{ icon: ZoomIn, fn: () => setZoom(z => Math.min(z + .25, 4)) }, { icon: ZoomOut, fn: () => setZoom(z => Math.max(z - .25, .5)) }, { icon: RotateCw, fn: () => setRot(r => r + 90) }].map((b, i) => (
+            <button key={i} onClick={b.fn} className="p-2.5 text-white/30 hover:text-white hover:bg-white/10 rounded-xl transition"><b.icon className="w-5 h-5" /></button>
+          ))}
+          <button onClick={handleDownload} disabled={downloading} className="p-2.5 text-white/30 hover:text-white hover:bg-white/10 rounded-xl transition disabled:opacity-40" title="Download Original">
+            {downloading ? <span className="w-5 h-5 border-2 border-white/20 border-t-white/60 rounded-full animate-spin block" /> : <Download className="w-5 h-5" />}
+          </button>
+          <div className="w-px h-6 bg-white/10 mx-1" />
+          <button onClick={onClose} className="p-2.5 text-white/30 hover:text-white hover:bg-white/10 rounded-xl transition"><X className="w-5 h-5" /></button>
+        </div>
+      </div>
+
+      <div ref={imageAreaRef} className="flex-1 flex items-center justify-center relative overflow-hidden select-none px-4" style={{ touchAction: 'none' }} onTouchStart={onTouchStart} onTouchMove={onTouchMove} onTouchEnd={onTouchEnd}>
+        <button onClick={prev} disabled={index === 0} className="absolute left-3 z-10 p-3 rounded-2xl bg-white/5 hover:bg-white/10 text-white/50 hover:text-white disabled:opacity-0 transition-all backdrop-blur"><ChevronLeft className="w-7 h-7" /></button>
+        {loading && !imgErr && <div className="absolute inset-0 flex items-center justify-center"><div className="w-10 h-10 border-2 border-white/10 border-t-amber-400 rounded-full animate-spin" /></div>}
+        {imgErr ? (
+          <div className="flex flex-col items-center gap-4 text-white/25"><Images className="w-14 h-14" /><p className="text-sm">Could not load</p><button onClick={handleDownload} className="text-xs text-purple-400 underline underline-offset-2 hover:text-purple-300 transition">Download Original</button></div>
+        ) : (
+          <img
+            src={src}
+            alt={photo.name}
+            draggable={false}
+            className="max-w-full max-h-full object-contain transition-all duration-200 rounded-lg"
+            style={{ transform: `translate(${pan.x}px, ${pan.y}px) scale(${zoom}) rotate(${rot}deg)`, opacity: loading ? 0 : 1 }}
+            onLoad={() => setLoading(false)}
+            onError={handleError}
+            referrerPolicy="no-referrer"
+          />
+        )}
+        <button onClick={next} disabled={index === photos.length - 1} className="absolute right-3 z-10 p-3 rounded-2xl bg-white/5 hover:bg-white/10 text-white/50 hover:text-white disabled:opacity-0 transition-all backdrop-blur"><ChevronRight className="w-7 h-7" /></button>
+      </div>
+
+      <div className="bg-gradient-to-t from-black/60 to-transparent pt-2 pb-3">
+        <div className="text-center mb-2"><span className="text-white/30 text-[11px] truncate block max-w-sm mx-auto">{photo.name}</span></div>
+        <div ref={thumbRef} className="flex items-center justify-start overflow-x-auto gap-2 px-4">
+          {photos.map((p, i) => (
+            <button key={`${p.id}-${i}`} data-idx={i} onClick={() => { onNav(i); reset(); }} className={`shrink-0 w-14 h-14 rounded-xl overflow-hidden border-2 transition-all duration-200 ${i === index ? 'border-amber-500 ring-2 ring-amber-500/30 scale-110' : 'border-transparent opacity-35 hover:opacity-60'}`}>
+              <img src={p.thumb} alt="" className="w-full h-full object-cover" loading="lazy" referrerPolicy="no-referrer" />
+            </button>
+          ))}
+        </div>
+      </div>
     </div>
   );
 }
@@ -1381,13 +1494,8 @@ function Gallery({ faceDescriptor, onLogout, onSetFaceDescriptor }: { faceDescri
                   <img src={addCacheBust(p.thumb, cacheBust)} alt={p.name} loading="lazy" referrerPolicy="no-referrer"
                     className={`w-full h-full object-cover rounded-2xl transition-all duration-500 group-hover:scale-[1.04] ${loaded.has(p.id) ? 'opacity-100' : 'opacity-0'}`}
                     onLoad={() => setLoaded(s => new Set(s).add(p.id))} onError={() => setFailed(s => new Set(s).add(p.id))} />
-                  {/* Overlay */}
-                  <div className="absolute inset-0 rounded-2xl bg-gradient-to-t from-black/80 via-black/10 to-transparent opacity-0 group-hover:opacity-100 transition-all duration-400 z-[2]" />
-                  {/* Info */}
-                  <div className="absolute bottom-0 left-0 right-0 p-3 opacity-100 sm:opacity-0 sm:group-hover:opacity-100 transition-all duration-300 translate-y-0 sm:translate-y-2 sm:group-hover:translate-y-0 z-[3]">
-                    <p className="text-white text-[11px] font-medium drop-shadow whitespace-normal break-words max-h-[2.6em] overflow-hidden sm:truncate">{p.name}</p>
-                    <p className="text-white/45 text-[9px] mt-0.5 whitespace-normal break-words max-h-[2.4em] overflow-hidden sm:truncate">{p.folder}</p>
-                  </div>
+                  {/* Hover overlay only — no text labels in gallery */}
+                  <div className="absolute inset-0 rounded-2xl bg-gradient-to-t from-black/60 via-black/5 to-transparent opacity-0 group-hover:opacity-100 transition-all duration-300 z-[2]" />
                 </button>
               ))}
             </div>
