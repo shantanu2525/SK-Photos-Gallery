@@ -96,6 +96,7 @@ function extractFolderId(url: string): string | null { const m1 = url.match(/\/f
 function makeThumb(fid: string) { return `https://lh3.googleusercontent.com/d/${fid}=w400`; }
 function makeFull(fid: string) { return `https://lh3.googleusercontent.com/d/${fid}=w1920`; }
 function makeDl(fid: string) { return `https://drive.google.com/uc?export=view&id=${fid}`; }
+function addCacheBust(url: string, token: number) { return token ? `${url}${url.includes('?') ? '&' : '?'}v=${token}` : url; }
 
 const API_KEY_STORAGE = 'gal_api_key';
 function getApiKey(): string { return FILE_CONFIG?.apiKey || localStorage.getItem(API_KEY_STORAGE) || ''; }
@@ -708,7 +709,12 @@ function AdminPanel({ onLogout }: { onLogout: () => void }) {
   // Export config as encrypted file
   const exportConfig = async () => {
     setCfgMsg('');
-    const cfg: ConfigData = { galPwHash: localStorage.getItem(GALLERY_PW_KEY) || '', adminPwHash: localStorage.getItem(ADMIN_PW_KEY) || '', folders, apiKey: localStorage.getItem(API_KEY_STORAGE) || '' };
+    const cfg: ConfigData = {
+      galPwHash: localStorage.getItem(GALLERY_PW_KEY) || '',
+      adminPwHash: localStorage.getItem(ADMIN_PW_KEY) || '',
+      folders,
+      apiKey: localStorage.getItem(API_KEY_STORAGE) || '',
+    };
     if (!cfg.galPwHash) { setCfgMsg('⚠️ Set gallery password first'); return; }
     try {
       const encrypted = await encryptData(JSON.stringify(cfg));
@@ -733,8 +739,13 @@ function AdminPanel({ onLogout }: { onLogout: () => void }) {
       const cfg = JSON.parse(decrypted) as ConfigData;
       if (cfg.galPwHash) localStorage.setItem(GALLERY_PW_KEY, cfg.galPwHash);
       if (cfg.adminPwHash) localStorage.setItem(ADMIN_PW_KEY, cfg.adminPwHash);
+      if (typeof cfg.apiKey === 'string') {
+        localStorage.setItem(API_KEY_STORAGE, cfg.apiKey);
+        setApiKeyInput(cfg.apiKey);
+        setApiTestResult('');
+      }
       if (cfg.folders?.length) { setFolders(cfg.folders); saveFolders(cfg.folders); }
-      setCfgMsg('✅ Config imported! Passwords and folders restored.');
+      setCfgMsg('✅ Config imported! Passwords, API key, and folders restored.');
       setTimeout(() => setCfgMsg(''), 4000);
     } catch { setCfgMsg('❌ Could not read config file. It may be corrupted.'); }
     if (fileInputRef.current) fileInputRef.current.value = '';
@@ -770,7 +781,7 @@ function AdminPanel({ onLogout }: { onLogout: () => void }) {
         {/* Config file export/import */}
         <div className="bg-dark-800/80 backdrop-blur border border-amber-500/20 rounded-2xl p-5 anim-fade-up" style={{ animationDelay: '150ms' }}>
           <h3 className="text-white text-sm font-semibold mb-2 flex items-center gap-2"><Lock className="w-4 h-4 text-amber-400" />Config File (Encrypted)</h3>
-          <p className="text-white/40 text-[11px] mb-4 leading-relaxed">Export your passwords & folder links as an <strong className="text-white/60">encrypted config file</strong>. Place it in the <code className="bg-white/5 px-1 rounded text-[10px]">public/</code> folder of your project so it loads automatically on every deploy.</p>
+          <p className="text-white/40 text-[11px] mb-4 leading-relaxed">Export your passwords, API key, and folder links as an <strong className="text-white/60">encrypted config file</strong>. Place it in the <code className="bg-white/5 px-1 rounded text-[10px]">public/</code> folder of your project so it loads automatically on every deploy.</p>
           <div className="grid sm:grid-cols-2 gap-3">
             <button onClick={exportConfig} className="py-3 rounded-xl text-sm font-semibold text-white bg-gradient-to-r from-amber-500 to-orange-600 hover:from-amber-400 hover:to-orange-500 shadow-lg transition active:scale-[.97] flex items-center justify-center gap-2"><FileDown className="w-4 h-4" />Export Config</button>
             <button onClick={() => fileInputRef.current?.click()} className="py-3 rounded-xl text-sm font-semibold text-white glass hover:bg-white/[0.08] transition active:scale-[.97] flex items-center justify-center gap-2 border border-white/10"><FileUp className="w-4 h-4" />Import Config</button>
@@ -972,13 +983,13 @@ function FolderFilterPopup({
                 className={`w-full flex items-center justify-between gap-3 p-3 rounded-2xl border transition-all ${
                   isOn ? 'bg-amber-500/10 border-amber-500/20' : 'bg-white/[0.03] border-white/[0.05]'
                 }`}>
-                <div className="flex items-center gap-3 min-w-0 text-left">
+                <div className="flex items-start gap-3 min-w-0 flex-1 text-left pr-2">
                   <div className={`w-10 h-10 rounded-xl flex items-center justify-center shrink-0 ${isOn ? 'bg-gradient-to-br from-amber-500 to-orange-600 text-white' : 'bg-white/[0.05] text-white/30'}`}>
                     <FolderOpen className="w-4 h-4" />
                   </div>
-                  <div className="min-w-0">
-                    <p className={`text-sm truncate ${isOn ? 'text-white' : 'text-white/50'}`}>{f.name}</p>
-                    <p className="text-[10px] text-amber-100/20">{counts[f.folderId] || 0} photos</p>
+                  <div className="min-w-0 flex-1">
+                    <p className={`text-sm leading-tight whitespace-normal break-words sm:truncate ${isOn ? 'text-white' : 'text-white/50'}`}>{f.name}</p>
+                    <p className="text-[10px] text-amber-100/20 mt-1">{counts[f.folderId] || 0} photos</p>
                   </div>
                 </div>
                 <div className={`w-12 h-7 rounded-full p-1 transition-all ${isOn ? 'bg-amber-500/30' : 'bg-white/[0.06]'}`}>
@@ -1005,14 +1016,27 @@ function Gallery({ faceDescriptor, onLogout, onSetFaceDescriptor }: { faceDescri
   const [loadingPhotos, setLoadingPhotos] = useState(true); const [scanning, setScanning] = useState(false); const [error, setError] = useState('');
   const [lightbox, setLightbox] = useState<number | null>(null); const [layout, setLayout] = useState<'grid' | 'masonry'>('grid'); const [query, setQuery] = useState('');
   const [sortMode, setSortMode] = useState<SortMode>('date-new');
-  const [loaded, setLoaded] = useState<Set<string>>(new Set()); const [failed, setFailed] = useState<Set<string>>(new Set()); void failed; // keep tracking for debug
+  const [loaded, setLoaded] = useState<Set<string>>(new Set()); const [failed, setFailed] = useState<Set<string>>(new Set()); void failed;
   const [foldersLoaded, setFoldersLoaded] = useState(0); const [scanProgress, setScanProgress] = useState(0); const [scanTotal, setScanTotal] = useState(0); const [showAll, setShowAll] = useState(false);
+  const [cacheBust, setCacheBust] = useState(0);
+  const [layoutKey, setLayoutKey] = useState(0);
+  const [layoutSwitching, setLayoutSwitching] = useState(false);
   const scanTip = useCyclingTip(_SCAN_TIPS);
   const [faceCaptureOpen, setFaceCaptureOpen] = useState(false);
   const [showWelcome, setShowWelcome] = useState(() => !localStorage.getItem(WELCOME_SEEN_KEY));
   const [showFolderPopup, setShowFolderPopup] = useState(() => folders.length > 1);
   const [enabledFolders, setEnabledFolders] = useState<string[]>(() => folders.map(f => f.folderId));
   const addLog = useCallback((msg: string) => { console.log(msg); }, []);
+  const switchLayout = useCallback((next: 'grid' | 'masonry') => {
+    if (next === layout) return;
+    setLayoutSwitching(true);
+    setLightbox(null);
+    requestAnimationFrame(() => {
+      setLayout(next);
+      setLayoutKey(k => k + 1);
+      window.setTimeout(() => setLayoutSwitching(false), 180);
+    });
+  }, [layout]);
 
   const loadPhotos = useCallback(async () => {
     setLoadingPhotos(true); setError(''); setLoaded(new Set()); setFailed(new Set()); setAllPhotos([]); setMatchedPhotos(null); setFoldersLoaded(0);
@@ -1054,26 +1078,41 @@ function Gallery({ faceDescriptor, onLogout, onSetFaceDescriptor }: { faceDescri
     setLoadingPhotos(false);
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+  const reloadFresh = useCallback(async () => {
+    setCacheBust(Date.now());
+    setLoaded(new Set());
+    setFailed(new Set());
+    await loadPhotos();
+  }, [loadPhotos]);
   useEffect(() => { loadPhotos(); }, [loadPhotos]);
 
-  // ── AI Face Scan — uses FaceMatcher for better accuracy ──
+  // ── AI Face Scan — scans only currently enabled albums ──
   useEffect(() => {
     if (loadingPhotos || !faceDescriptor || allPhotos.length === 0) return;
-    let cancelled = false;
-    const MATCH_THRESHOLD = 0.55; // lower = stricter, higher = more lenient
-    const BATCH = 5;
-    const scanUrl = (fid: string) => `https://lh3.googleusercontent.com/d/${fid}=w320`;
 
-    // Create a FaceMatcher from the reference face — AI handles matching
+    // Respect album selection while scanning
+    const scanPhotos = allPhotos.filter(p => enabledFolders.includes(p.folderId));
+
+    // If no albums selected, don't scan anything
+    if (scanPhotos.length === 0) {
+      setMatchedPhotos([]);
+      setScanning(false);
+      setScanProgress(0);
+      setScanTotal(0);
+      return;
+    }
+
+    let cancelled = false;
+    const MATCH_THRESHOLD = 0.55;
+    const BATCH = 5;
+    const scanUrl = (fid: string) => addCacheBust(`https://lh3.googleusercontent.com/d/${fid}=w320`, cacheBust);
+
     const labeledDescriptor = new faceapi.LabeledFaceDescriptors('user', [faceDescriptor]);
     const matcher = new faceapi.FaceMatcher(labeledDescriptor, MATCH_THRESHOLD);
 
-    // Use SSD MobileNet for scanning — more accurate than TinyFaceDetector
     const ssdOpts = new faceapi.SsdMobilenetv1Options({ minConfidence: 0.35 });
-    // TinyFaceDetector as fast fallback
     const tinyOpts = new faceapi.TinyFaceDetectorOptions({ inputSize: 256, scoreThreshold: 0.3 });
 
-    // Reliable image loader
     const loadScanImage = (url: string): Promise<HTMLImageElement | null> => {
       return new Promise(resolve => {
         const img = document.createElement('img');
@@ -1090,51 +1129,39 @@ function Gallery({ faceDescriptor, onLogout, onSetFaceDescriptor }: { faceDescri
       });
     };
 
-    // Scan one photo — try SSD first, fallback to Tiny
-    const scanPhoto = async (_photo: Photo, img: HTMLImageElement): Promise<boolean> => {
-      // Try SSD MobileNet (more accurate)
+    const scanPhoto = async (img: HTMLImageElement): Promise<boolean> => {
       let dets = await faceapi.detectAllFaces(img, ssdOpts).withFaceLandmarks().withFaceDescriptors();
-
-      // If SSD found nothing, try TinyFaceDetector as fallback
       if (dets.length === 0) {
         dets = await faceapi.detectAllFaces(img, tinyOpts).withFaceLandmarks().withFaceDescriptors();
       }
-
       if (dets.length === 0) return false;
-
-      // Use FaceMatcher to check each detected face
       for (const det of dets) {
         const match = matcher.findBestMatch(det.descriptor);
-        if (match.label === 'user') return true; // AI says it's the same person
+        if (match.label === 'user') return true;
       }
       return false;
     };
 
     (async () => {
       setScanning(true);
-      setScanTotal(allPhotos.length);
+      setScanTotal(scanPhotos.length);
       setScanProgress(0);
       const matches: Photo[] = [];
 
-      // Preloading system
       const preloading = new Map<string, Promise<HTMLImageElement | null>>();
       const preload = (start: number, count: number) => {
-        for (let j = start; j < Math.min(start + count, allPhotos.length); j++) {
-          const fid = allPhotos[j].fileId;
+        for (let j = start; j < Math.min(start + count, scanPhotos.length); j++) {
+          const fid = scanPhotos[j].fileId;
           if (!preloading.has(fid)) preloading.set(fid, loadScanImage(scanUrl(fid)));
         }
       };
 
-      // Preload first chunk
       preload(0, BATCH * 4);
 
-      for (let i = 0; i < allPhotos.length; i += BATCH) {
+      for (let i = 0; i < scanPhotos.length; i += BATCH) {
         if (cancelled) break;
-
-        // Keep preloading ahead
         preload(i + BATCH, BATCH * 4);
-
-        const batch = allPhotos.slice(i, i + BATCH);
+        const batch = scanPhotos.slice(i, i + BATCH);
 
         for (const photo of batch) {
           if (cancelled) break;
@@ -1142,25 +1169,25 @@ function Gallery({ faceDescriptor, onLogout, onSetFaceDescriptor }: { faceDescri
             const cached = preloading.get(photo.fileId);
             const img = cached ? await cached : await loadScanImage(scanUrl(photo.fileId));
             if (img && img.naturalWidth) {
-              const isMatch = await scanPhoto(photo, img);
+              const isMatch = await scanPhoto(img);
               if (isMatch) matches.push(photo);
             }
           } catch { /* skip */ }
         }
 
-        setScanProgress(Math.min(i + BATCH, allPhotos.length));
+        setScanProgress(Math.min(i + BATCH, scanPhotos.length));
         setMatchedPhotos([...matches]);
       }
 
       if (!cancelled) {
         setMatchedPhotos(matches);
         setScanning(false);
-        console.log(`AI Face Scan complete: ${matches.length} matches out of ${allPhotos.length}`);
+        console.log(`AI Face Scan complete: ${matches.length} matches out of ${scanPhotos.length} selected photos`);
       }
     })();
 
     return () => { cancelled = true; };
-  }, [loadingPhotos, faceDescriptor, allPhotos]);
+  }, [loadingPhotos, faceDescriptor, allPhotos, enabledFolders]);
 
   const PAGE_SIZE = 60;
   const [visibleCount, setVisibleCount] = useState(PAGE_SIZE);
@@ -1254,7 +1281,7 @@ function Gallery({ faceDescriptor, onLogout, onSetFaceDescriptor }: { faceDescri
       {isReady && (<>
         {/* Scanning progress bar — inline, not blocking */}
         {scanning && faceDescriptor && (
-          <div className="fixed top-0 left-0 right-0 z-40">
+          <div className="relative z-20 border-b border-white/5 glass-strong">
             <div className="h-1 bg-white/[0.03]">
               <div className="h-full bg-gradient-to-r from-rose-500 via-amber-400 to-rose-500 transition-all duration-300 ease-out grad-move"
                 style={{ width: `${scanTotal > 0 ? Math.round((scanProgress / scanTotal) * 100) : 0}%` }} />
@@ -1269,13 +1296,13 @@ function Gallery({ faceDescriptor, onLogout, onSetFaceDescriptor }: { faceDescri
             </div>
           </div>
         )}
-        <header className={`sticky top-0 z-30 glass-strong border-b border-white/[0.04] ${scanning ? 'mt-[52px]' : ''}`}><div className="max-w-[1440px] mx-auto px-4 md:px-6 py-3 flex items-center justify-between gap-4"><div className="flex items-center gap-3 min-w-0"><div className="w-9 h-9 rounded-xl bg-gradient-to-br from-amber-600 to-orange-600 flex items-center justify-center shrink-0 shadow-lg shadow-amber-700/20 anim-glow"><Heart className="w-[18px] h-[18px] text-white" /></div><div className="min-w-0"><h2 className="text-white font-semibold text-[15px] truncate flex items-center gap-1.5">{faceDescriptor && !showAll ? '💫 Your Moments' : '💍 Wedding Album'}{faceDescriptor && !showAll && <><span className="px-1.5 py-0.5 rounded-full bg-rose-500/15 text-rose-300 text-[8px] font-bold uppercase tracking-wider border border-rose-500/20 shrink-0">AI</span><span className="px-1.5 py-0.5 rounded-full bg-amber-500/15 text-amber-300 text-[8px] font-bold uppercase tracking-wider border border-amber-500/20 shrink-0">Beta</span></>}</h2><p className="text-amber-100/25 text-[11px] font-light">{faceDescriptor && !showAll ? `${allVisible.length} moments found by AI` : hasMore ? `${visible.length} of ${allVisible.length} memories` : `${allVisible.length} memories`}</p></div></div><div className="flex items-center gap-2"><button onClick={() => setShowFolderPopup(true)} className="hidden sm:flex items-center gap-1.5 px-3.5 py-2 rounded-xl text-xs font-semibold glass text-amber-100/40 hover:text-amber-100/70 transition-all"><FolderOpen className="w-3.5 h-3.5" />Albums</button>{faceDescriptor ? (
+        <header className="sticky top-0 z-30 glass-strong border-b border-white/[0.04]"><div className="max-w-[1440px] mx-auto px-4 md:px-6 py-3 flex items-center justify-between gap-4"><div className="flex items-center gap-3 min-w-0"><div className="w-9 h-9 rounded-xl bg-gradient-to-br from-amber-600 to-orange-600 flex items-center justify-center shrink-0 shadow-lg shadow-amber-700/20 anim-glow"><Heart className="w-[18px] h-[18px] text-white" /></div><div className="min-w-0"><h2 className="text-white font-semibold text-[15px] truncate flex items-center gap-1.5">{faceDescriptor && !showAll ? '💫 Your Moments' : '💍 Wedding Album'}{faceDescriptor && !showAll && <><span className="px-1.5 py-0.5 rounded-full bg-rose-500/15 text-rose-300 text-[8px] font-bold uppercase tracking-wider border border-rose-500/20 shrink-0">AI</span><span className="px-1.5 py-0.5 rounded-full bg-amber-500/15 text-amber-300 text-[8px] font-bold uppercase tracking-wider border border-amber-500/20 shrink-0">Beta</span></>}</h2><p className="text-amber-100/25 text-[11px] font-light">{faceDescriptor && !showAll ? `${allVisible.length} moments found by AI` : hasMore ? `${visible.length} of ${allVisible.length} memories` : `${allVisible.length} memories`}</p></div></div><div className="flex items-center gap-2"><button onClick={() => setShowFolderPopup(true)} className="hidden sm:flex items-center gap-1.5 px-3.5 py-2 rounded-xl text-xs font-semibold glass text-amber-100/40 hover:text-amber-100/70 transition-all"><FolderOpen className="w-3.5 h-3.5" />Albums</button>{faceDescriptor ? (
               <button onClick={() => setShowAll(v => !v)} className={`hidden sm:flex items-center gap-1.5 px-3.5 py-2 rounded-xl text-xs font-semibold transition-all ${showAll ? 'bg-rose-500/15 text-rose-300 border border-rose-500/20' : 'glass text-amber-100/40 hover:text-amber-100/70'}`}>{showAll ? <><ScanFace className="w-3.5 h-3.5" />My Moments</> : <><Layers className="w-3.5 h-3.5" />All Photos</>}</button>
             ) : (
               <button onClick={() => setFaceCaptureOpen(true)} className="hidden sm:flex items-center gap-1.5 px-3.5 py-2 rounded-xl text-xs font-semibold text-white bg-gradient-to-r from-rose-600 to-amber-600 hover:from-rose-500 hover:to-amber-500 shadow-lg shadow-rose-700/15 transition-all btn-shine">
                 <ScanFace className="w-3.5 h-3.5" /> Find My Photos
               </button>
-            )}<div className="relative hidden sm:block"><Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-white/20" /><input value={query} onChange={e => setQuery(e.target.value)} placeholder="Search moments…" className="pl-9 pr-4 py-2 w-44 glass rounded-xl text-white text-xs placeholder-white/20 focus:outline-none focus:ring-1 focus:ring-amber-500/25" /></div><select value={sortMode} onChange={e => setSortMode(e.target.value as SortMode)} className="hidden sm:block glass rounded-xl text-white text-[11px] px-2.5 py-2 focus:outline-none focus:ring-1 focus:ring-amber-500/25 bg-transparent appearance-none cursor-pointer" style={{ backgroundImage: "url(\"data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='rgba(255,255,255,0.3)' stroke-width='2'%3E%3Cpath d='M6 9l6 6 6-6'/%3E%3C/svg%3E\")", backgroundRepeat: 'no-repeat', backgroundPosition: 'right 8px center', paddingRight: '24px' }}><option value="date-new" className="bg-dark-800 text-white">Newest First</option><option value="date-old" className="bg-dark-800 text-white">Oldest First</option><option value="name-az" className="bg-dark-800 text-white">Name A–Z</option><option value="name-za" className="bg-dark-800 text-white">Name Z–A</option><option value="folder-az" className="bg-dark-800 text-white">Folder A–Z</option><option value="folder-za" className="bg-dark-800 text-white">Folder Z–A</option></select><div className="flex glass rounded-xl p-0.5"><button onClick={() => setLayout('grid')} className={`p-2 rounded-lg transition ${layout === 'grid' ? 'bg-amber-600/80 text-white shadow-md' : 'text-white/30 hover:text-white/60'}`}><Grid3X3 className="w-4 h-4" /></button><button onClick={() => setLayout('masonry')} className={`p-2 rounded-lg transition ${layout === 'masonry' ? 'bg-amber-600/80 text-white shadow-md' : 'text-white/30 hover:text-white/60'}`}><LayoutGrid className="w-4 h-4" /></button></div><button onClick={loadPhotos} className="p-2 text-white/25 hover:text-white glass rounded-xl transition"><RefreshCw className="w-4 h-4" /></button><button onClick={onLogout} className="p-2 text-white/25 hover:text-red-400 glass rounded-xl transition"><LogOut className="w-[18px] h-[18px]" /></button></div></div></header>
+            )}<div className="relative hidden sm:block"><Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-white/20" /><input value={query} onChange={e => setQuery(e.target.value)} placeholder="Search moments…" className="pl-9 pr-4 py-2 w-44 glass rounded-xl text-white text-xs placeholder-white/20 focus:outline-none focus:ring-1 focus:ring-amber-500/25" /></div><select value={sortMode} onChange={e => setSortMode(e.target.value as SortMode)} className="hidden sm:block glass rounded-xl text-white text-[11px] px-2.5 py-2 focus:outline-none focus:ring-1 focus:ring-amber-500/25 bg-transparent appearance-none cursor-pointer" style={{ backgroundImage: "url(\"data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='rgba(255,255,255,0.3)' stroke-width='2'%3E%3Cpath d='M6 9l6 6 6-6'/%3E%3C/svg%3E\")", backgroundRepeat: 'no-repeat', backgroundPosition: 'right 8px center', paddingRight: '24px' }}><option value="date-new" className="bg-dark-800 text-white">Newest First</option><option value="date-old" className="bg-dark-800 text-white">Oldest First</option><option value="name-az" className="bg-dark-800 text-white">Name A–Z</option><option value="name-za" className="bg-dark-800 text-white">Name Z–A</option><option value="folder-az" className="bg-dark-800 text-white">Folder A–Z</option><option value="folder-za" className="bg-dark-800 text-white">Folder Z–A</option></select><div className="flex glass rounded-xl p-0.5"><button onClick={() => switchLayout('grid')} className={`p-2 rounded-lg transition ${layout === 'grid' ? 'bg-amber-600/80 text-white shadow-md' : 'text-white/30 hover:text-white/60'}`}><Grid3X3 className="w-4 h-4" /></button><button onClick={() => switchLayout('masonry')} className={`p-2 rounded-lg transition ${layout === 'masonry' ? 'bg-amber-600/80 text-white shadow-md' : 'text-white/30 hover:text-white/60'}`}><LayoutGrid className="w-4 h-4" /></button></div><button onClick={reloadFresh} className="p-2 text-white/25 hover:text-white glass rounded-xl transition"><RefreshCw className="w-4 h-4" /></button><button onClick={onLogout} className="p-2 text-white/25 hover:text-red-400 glass rounded-xl transition"><LogOut className="w-[18px] h-[18px]" /></button></div></div></header>
         <main className="max-w-[1440px] mx-auto px-4 md:px-6 py-6">
           {faceDescriptor ? (
             !error && <button onClick={() => setShowAll(v => !v)} className={`sm:hidden w-full mb-4 flex items-center justify-center gap-2 py-3 rounded-2xl text-sm font-semibold transition-all ${showAll ? 'bg-rose-500/15 text-rose-300 border border-rose-500/20' : 'glass text-amber-100/40'}`}>{showAll ? <><ScanFace className="w-4 h-4" />Show My Moments Only</> : <><Layers className="w-4 h-4" />Show All Photos</>}</button>
@@ -1333,7 +1360,7 @@ function Gallery({ faceDescriptor, onLogout, onSetFaceDescriptor }: { faceDescri
             </div>
           )}
 
-          {error && <div className="flex flex-col items-center py-32 anim-fade-up"><Images className="w-14 h-14 text-white/[0.06] mb-4" /><p className="text-white/35 text-sm text-center max-w-sm">{error}</p><button onClick={loadPhotos} className="mt-5 px-5 py-2.5 glass text-purple-300 text-xs rounded-xl transition hover:bg-white/5">Retry</button></div>}
+          {error && <div className="flex flex-col items-center py-32 anim-fade-up"><Images className="w-14 h-14 text-white/[0.06] mb-4" /><p className="text-white/35 text-sm text-center max-w-sm">{error}</p><button onClick={reloadFresh} className="mt-5 px-5 py-2.5 glass text-purple-300 text-xs rounded-xl transition hover:bg-white/5">Retry</button></div>}
           {!error && enabledFolders.length === 0 && (
             <div className="flex flex-col items-center py-24 anim-fade-up">
               <div className="w-20 h-20 rounded-3xl glass flex items-center justify-center mb-5"><FolderOpen className="w-10 h-10 text-white/10" /></div>
@@ -1345,21 +1372,21 @@ function Gallery({ faceDescriptor, onLogout, onSetFaceDescriptor }: { faceDescri
           {!error && enabledFolders.length > 0 && faceDescriptor && !showAll && matchedPhotos && matchedPhotos.length === 0 && <div className="flex flex-col items-center py-32 anim-fade-up"><div className="w-20 h-20 rounded-3xl glass flex items-center justify-center mb-5"><ScanFace className="w-10 h-10 text-white/10" /></div><p className="text-amber-100/40 text-base font-medium">Couldn't find you in the wedding photos</p><p className="text-amber-100/20 text-sm mt-1">Try a clearer selfie with good lighting</p><p className="text-amber-300/20 text-[10px] mt-2 mb-6 flex items-center gap-1 italic"><Sparkles className="w-3 h-3" /> AI face recognition is in beta</p><button onClick={() => setShowAll(true)} className="px-6 py-3 bg-gradient-to-r from-amber-600 to-orange-600 text-white text-sm font-semibold rounded-2xl shadow-xl shadow-amber-700/20 transition active:scale-[.97] flex items-center gap-2 btn-shine grad-move"><Heart className="w-5 h-5" />Browse All Wedding Photos</button></div>}
           {/* Grid Layout */}
           {!error && visible.length > 0 && layout === 'grid' && (
-            <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 gap-3">
+            <div key={`grid-${layoutKey}`} className={`grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 gap-3 transition-opacity duration-150 ${layoutSwitching ? 'opacity-0' : 'opacity-100'}`}>
               {visible.map((p, i) => (
                 <button key={`${p.id}-${i}`} onClick={() => setLightbox(i)}
-                  className="photo-card group relative aspect-square rounded-2xl bg-dark-800 border border-white/[0.04] anim-card-in"
-                  style={{ animationDelay: `${Math.min(i * 30, 600)}ms` }}>
+                  className={`photo-card group relative aspect-square rounded-2xl bg-dark-800 border border-white/[0.04] ${layoutSwitching ? '' : 'anim-card-in'}`}
+                  style={{ animationDelay: layoutSwitching ? '0ms' : `${Math.min(i * 20, 240)}ms` }}>
                   {!loaded.has(p.id) && <div className="absolute inset-0 shimmer rounded-2xl" />}
-                  <img src={p.thumb} alt={p.name} loading="lazy" referrerPolicy="no-referrer"
-                    className={`w-full h-full object-cover rounded-2xl transition-all duration-700 group-hover:scale-[1.08] ${loaded.has(p.id) ? 'opacity-100' : 'opacity-0'}`}
+                  <img src={addCacheBust(p.thumb, cacheBust)} alt={p.name} loading="lazy" referrerPolicy="no-referrer"
+                    className={`w-full h-full object-cover rounded-2xl transition-all duration-500 group-hover:scale-[1.04] ${loaded.has(p.id) ? 'opacity-100' : 'opacity-0'}`}
                     onLoad={() => setLoaded(s => new Set(s).add(p.id))} onError={() => setFailed(s => new Set(s).add(p.id))} />
                   {/* Overlay */}
                   <div className="absolute inset-0 rounded-2xl bg-gradient-to-t from-black/80 via-black/10 to-transparent opacity-0 group-hover:opacity-100 transition-all duration-400 z-[2]" />
                   {/* Info */}
-                  <div className="absolute bottom-0 left-0 right-0 p-3 opacity-0 group-hover:opacity-100 transition-all duration-300 translate-y-2 group-hover:translate-y-0 z-[3]">
-                    <p className="text-white text-xs truncate font-medium drop-shadow">{p.name}</p>
-                    <p className="text-white/40 text-[9px] mt-0.5">{p.folder}</p>
+                  <div className="absolute bottom-0 left-0 right-0 p-3 opacity-100 sm:opacity-0 sm:group-hover:opacity-100 transition-all duration-300 translate-y-0 sm:translate-y-2 sm:group-hover:translate-y-0 z-[3]">
+                    <p className="text-white text-[11px] font-medium drop-shadow whitespace-normal break-words max-h-[2.6em] overflow-hidden sm:truncate">{p.name}</p>
+                    <p className="text-white/45 text-[9px] mt-0.5 whitespace-normal break-words max-h-[2.4em] overflow-hidden sm:truncate">{p.folder}</p>
                   </div>
                 </button>
               ))}
@@ -1367,14 +1394,14 @@ function Gallery({ faceDescriptor, onLogout, onSetFaceDescriptor }: { faceDescri
           )}
           {/* Masonry Layout */}
           {!error && visible.length > 0 && layout === 'masonry' && (
-            <div className="columns-2 sm:columns-3 md:columns-4 lg:columns-5 xl:columns-6 gap-3 [&>button]:mb-3">
+            <div key={`masonry-${layoutKey}`} className={`columns-2 sm:columns-3 md:columns-4 lg:columns-5 xl:columns-6 gap-3 [&>button]:mb-3 transition-opacity duration-150 ${layoutSwitching ? 'opacity-0' : 'opacity-100'}`}>
               {visible.map((p, i) => (
                 <button key={`${p.id}-${i}`} onClick={() => setLightbox(i)}
-                  className="photo-card group relative w-full rounded-2xl bg-dark-800 border border-white/[0.04] break-inside-avoid block anim-card-in"
-                  style={{ animationDelay: `${Math.min(i * 30, 600)}ms` }}>
+                  className={`photo-card group relative w-full rounded-2xl bg-dark-800 border border-white/[0.04] break-inside-avoid block ${layoutSwitching ? '' : 'anim-card-in'}`}
+                  style={{ animationDelay: layoutSwitching ? '0ms' : `${Math.min(i * 20, 240)}ms` }}>
                   {!loaded.has(p.id) && <div className="w-full pt-[75%] shimmer rounded-2xl" />}
-                  <img src={p.thumb} alt={p.name} loading="lazy" referrerPolicy="no-referrer"
-                    className={`w-full h-auto rounded-2xl transition-all duration-700 group-hover:scale-[1.03] ${loaded.has(p.id) ? 'opacity-100' : 'opacity-0'}`}
+                  <img src={addCacheBust(p.thumb, cacheBust)} alt={p.name} loading="lazy" referrerPolicy="no-referrer"
+                    className={`w-full h-auto rounded-2xl transition-all duration-500 group-hover:scale-[1.02] ${loaded.has(p.id) ? 'opacity-100' : 'opacity-0'}`}
                     onLoad={() => setLoaded(s => new Set(s).add(p.id))} onError={() => setFailed(s => new Set(s).add(p.id))} />
                   <div className="absolute inset-0 rounded-2xl bg-gradient-to-t from-black/80 via-black/10 to-transparent opacity-0 group-hover:opacity-100 transition-all duration-400 z-[2]" />
                 </button>
